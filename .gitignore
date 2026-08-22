@@ -19,3 +19,4 @@ venv/
 # OS
 .DS_Store
 Thumbs.db
+muleguard_temporal_v2.parquet 
