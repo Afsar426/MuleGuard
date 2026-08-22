@@ -682,33 +682,108 @@ def predict_transaction(tx: TransactionInput):
 
 @app.get("/analytics/monthly")
 def get_analytics_monthly():
-    # Return comparison for July vs August fraud trends
+    all_transactions = fetch_transactions()
+    all_accounts = fetch_accounts()
+    
+    from collections import defaultdict
+    
+    monthly_fraud_counts = defaultdict(int)
+    monthly_fraud_amounts = defaultdict(float)
+    monthly_suspicious_accounts = defaultdict(set)
+    
+    now = datetime.now()
+    month_names = []
+    for i in range(5, -1, -1):
+        m_date = now - timedelta(days=i*30)
+        month_names.append(m_date.strftime("%B"))
+        
+    for tx in all_transactions:
+        try:
+            dt = datetime.strptime(tx["timestamp"], "%Y-%m-%d %H:%M:%S")
+        except Exception:
+            try:
+                dt = datetime.strptime(tx["timestamp"], "%Y-%m-%d")
+            except Exception:
+                continue
+                
+        m_name = dt.strftime("%B")
+        is_flagged = tx.get("status") == "FLAGGED"
+        
+        if is_flagged:
+            monthly_fraud_counts[m_name] += 1
+            monthly_fraud_amounts[m_name] += tx.get("amount", 0.0)
+            if tx.get("sender_id"):
+                monthly_suspicious_accounts[m_name].add(tx["sender_id"])
+            if tx.get("receiver_id"):
+                monthly_suspicious_accounts[m_name].add(tx["receiver_id"])
+                
+    history = []
+    for m in month_names:
+        history.append({
+            "month": m[:3],
+            "count": monthly_fraud_counts[m]
+        })
+        
+    curr_month = now.strftime("%B")
+    prev_month = (now - timedelta(days=30)).strftime("%B")
+    
+    curr_cnt = monthly_fraud_counts[curr_month]
+    curr_amt = monthly_fraud_amounts[curr_month] / 100000.0  # Convert to Lakhs
+    curr_susp = len(monthly_suspicious_accounts[curr_month])
+    
+    prev_cnt = monthly_fraud_counts[prev_month]
+    prev_amt = monthly_fraud_amounts[prev_month] / 100000.0  # Convert to Lakhs
+    prev_susp = len(monthly_suspicious_accounts[prev_month])
+    
+    p_cnt = prev_cnt if prev_cnt > 0 else 1
+    p_amt = prev_amt if prev_amt > 0 else 1.0
+    p_susp = prev_susp if prev_susp > 0 else 1
+    
+    # 1. Count payment methods for FLAGGED transactions
+    pay_breakdown = {"UPI": 0, "Debit Card": 0, "Net Banking": 0, "Credit Card": 0, "PayPal": 0}
+    # 2. Count risk level distribution of all accounts
+    risk_breakdown = {"Critical": 0, "High": 0, "Medium": 0, "Low": 0}
+    
+    for tx in all_transactions:
+        if tx.get("status") == "FLAGGED":
+            method = tx.get("payment_method")
+            if method in pay_breakdown:
+                pay_breakdown[method] += 1
+            else:
+                pay_breakdown["UPI"] += 1
+                
+    for acc in all_accounts:
+        r_lvl = acc.get("risk_level", "Low/Safe")
+        if "Critical" in r_lvl:
+            risk_breakdown["Critical"] += 1
+        elif "High" in r_lvl:
+            risk_breakdown["High"] += 1
+        elif "Medium" in r_lvl:
+            risk_breakdown["Medium"] += 1
+        else:
+            risk_breakdown["Low"] += 1
+            
     return {
         "august": {
-            "month": "August 2026",
-            "fraud_transactions": 14,
-            "fraud_amount_lakhs": 8.7,
-            "suspicious_accounts": 6
+            "month": curr_month,
+            "fraud_transactions": curr_cnt,
+            "fraud_amount_lakhs": round(curr_amt, 2),
+            "suspicious_accounts": curr_susp,
+            "payment_breakdown": pay_breakdown,
+            "risk_breakdown": risk_breakdown
         },
         "july": {
-            "month": "July 2026",
-            "fraud_transactions": 9,
-            "fraud_amount_lakhs": 4.2,
-            "suspicious_accounts": 3
+            "month": prev_month,
+            "fraud_transactions": prev_cnt,
+            "fraud_amount_lakhs": round(prev_amt, 2),
+            "suspicious_accounts": prev_susp
         },
         "changes": {
-            "fraud_transactions_pct": 55.6,
-            "fraud_amount_pct": 107.1,
-            "suspicious_accounts_pct": 100.0
+            "fraud_transactions_pct": round(((curr_cnt - prev_cnt) / p_cnt) * 100, 1),
+            "fraud_amount_pct": round(((curr_amt - prev_amt) / p_amt) * 100, 1),
+            "suspicious_accounts_pct": round(((curr_susp - prev_susp) / p_susp) * 100, 1)
         },
-        "history": [
-            {"month": "March", "count": 2},
-            {"month": "April", "count": 3},
-            {"month": "May", "count": 5},
-            {"month": "June", "count": 6},
-            {"month": "July", "count": 9},
-            {"month": "August", "count": 14}
-        ]
+        "history": history
     }
 
 @app.get("/regional-risk")
@@ -756,18 +831,30 @@ def get_payment_methods():
     
     dist = {}
     risk = {}
+    details = {}
     for m in methods:
         txs_with_method = [t for t in all_txs if t.get("payment_method") == m]
-        dist[m] = int(round((len(txs_with_method) / total_txs) * 100))
+        cnt = len(txs_with_method)
+        vol = sum(t.get("amount", 0.0) for t in txs_with_method)
+        avg = vol / cnt if cnt > 0 else 0.0
+        
+        dist[m] = int(round((cnt / total_txs) * 100))
         
         if txs_with_method:
-            risk[m] = int(round(sum(t.get("risk_score", 0) for t in txs_with_method) / len(txs_with_method)))
+            risk[m] = int(round(sum(t.get("risk_score", 0) for t in txs_with_method) / cnt))
         else:
             risk[m] = 0
             
+        details[m] = {
+            "count": cnt,
+            "volume": vol,
+            "avg_amount": avg
+        }
+            
     return {
         "distribution": dist,
-        "risk_levels": risk
+        "risk_levels": risk,
+        "details": details
     }
 
 class ReportRequest(BaseModel):

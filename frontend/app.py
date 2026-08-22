@@ -294,6 +294,7 @@ class ApiClient:
         self.cached_dashboard = None
         self.cached_regional = None
         self.cached_payment_methods = None
+        self.cached_analytics_monthly = None
         
         self.local_accounts = {}
         self.local_transactions = []
@@ -555,36 +556,13 @@ class ApiClient:
         }
         
     def get_analytics_monthly(self):
+        if self.cached_analytics_monthly:
+            return self.cached_analytics_monthly
         if not self.local_mode:
             try:
                 r = requests.get(f"{self.base_url}/analytics/monthly", timeout=2.0)
                 if r.status_code == 200:
-                    data = r.json()
-                    aug = data.get("august", {})
-                    jul = data.get("july", {})
-                    tx_change = 0.0
-                    if jul.get("fraud_transactions", 0) > 0:
-                        tx_change = round(((aug.get("fraud_transactions", 0) - jul.get("fraud_transactions", 0)) / jul.get("fraud_transactions", 0)) * 100, 1)
-                    amt_change = 0.0
-                    if jul.get("fraud_amount_lakhs", 0) > 0:
-                        amt_change = round(((aug.get("fraud_amount_lakhs", 0) - jul.get("fraud_amount_lakhs", 0)) / jul.get("fraud_amount_lakhs", 0)) * 100, 1)
-                    acc_change = 0.0
-                    if jul.get("suspicious_accounts", 0) > 0:
-                        acc_change = round(((aug.get("suspicious_accounts", 0) - jul.get("suspicious_accounts", 0)) / jul.get("suspicious_accounts", 0)) * 100, 1)
-                        
-                    return {
-                        "august": aug,
-                        "july": jul,
-                        "changes": {
-                            "fraud_transactions_pct": tx_change,
-                            "fraud_amount_pct": amt_change,
-                            "suspicious_accounts_pct": acc_change
-                        },
-                        "history": [
-                            {"month": "March", "count": 2}, {"month": "April", "count": 3}, {"month": "May", "count": 5},
-                            {"month": "June", "count": 6}, {"month": "July", "count": jul.get("fraud_transactions", 9)}, {"month": "August", "count": aug.get("fraud_transactions", 14)}
-                        ]
-                    }
+                    return r.json()
             except Exception as e:
                 print(f"API analytics error: {e}")
                 
@@ -1770,6 +1748,10 @@ class MainWindow(QMainWindow):
         # Toggle back button visibility (hide on Dashboard, show elsewhere)
         if hasattr(self, "btn_back"):
             self.btn_back.setVisible(index != 0)
+            
+        # Check API health to recover from local fallback mode if backend starts late
+        if self.api.local_mode:
+            self.api.check_health()
             
         current_widget = self.content_stack.currentWidget()
         if hasattr(current_widget, "load_data"):
@@ -3579,6 +3561,40 @@ class FraudAnalyticsView(QWidget):
         master_layout.addWidget(scroll)
         
     def load_data(self):
+        # 1. Fetch monthly analytics details from API
+        data = self.api.get_analytics_monthly()
+        if data:
+            aug = data.get("august", {})
+            jul = data.get("july", {})
+            changes = data.get("changes", {})
+            history = data.get("history", [])
+            
+            # Map history
+            if history:
+                self.sim_months = [h["month"] for h in history]
+                self.sim_monthly_cases = [h["count"] for h in history]
+                self.sim_monthly_amounts = [round(h["count"] * 0.6, 1) for h in history]
+            
+            self.sim_total_amount = aug.get("fraud_amount_lakhs", 0.0)
+            self.sim_suspicious_accounts = aug.get("suspicious_accounts", 0)
+            
+            # Breakdowns
+            p_breakdown = aug.get("payment_breakdown", {})
+            self.sim_pay_upi = p_breakdown.get("UPI", 0)
+            self.sim_pay_debit = p_breakdown.get("Debit Card", 0)
+            self.sim_pay_net = p_breakdown.get("Net Banking", 0)
+            self.sim_pay_credit = p_breakdown.get("Credit Card", 0)
+            
+            r_breakdown = aug.get("risk_breakdown", {})
+            self.sim_risk_critical = r_breakdown.get("Critical", 0)
+            self.sim_risk_high = r_breakdown.get("High", 0)
+            self.sim_risk_medium = r_breakdown.get("Medium", 0)
+            self.sim_risk_low = r_breakdown.get("Low", 0)
+            
+            tot_flagged = aug.get("fraud_transactions", 0)
+            self.sim_avg_fraud_amount = int(self.sim_total_amount * 100000 / tot_flagged) if tot_flagged > 0 else 0
+            self.sim_detection_rate = 94.5 if tot_flagged > 0 else 0.0
+            
         # 0. Update KPI stats labels dynamically from simulated variables
         total_p_cases = self.sim_pay_upi + self.sim_pay_debit + self.sim_pay_net + self.sim_pay_credit
         total_r_cases = self.sim_risk_critical + self.sim_risk_high + self.sim_risk_medium + self.sim_risk_low
@@ -4230,6 +4246,54 @@ class PaymentMethodsView(QWidget):
         master_layout.addWidget(scroll)
         
     def load_data(self):
+        # 1. Fetch real payment methods metrics
+        data = self.api.get_payment_methods()
+        if data:
+            dist = data.get("distribution", {})
+            risks = data.get("risk_levels", {})
+            details = data.get("details", {})
+            
+            # Map UPI
+            upi_det = details.get("UPI", {})
+            self.sim_upi_txs = upi_det.get("count", 0)
+            self.sim_upi_amt = upi_det.get("volume", 0.0) / 10000000.0  # Convert to Crores
+            self.sim_upi_avg = upi_det.get("avg_amount", 0.0)
+            self.sim_upi_risk = risks.get("UPI", 0)
+            
+            # Map Debit Card
+            dc_det = details.get("Debit Card", {})
+            self.sim_debit_txs = dc_det.get("count", 0)
+            self.sim_debit_amt = dc_det.get("volume", 0.0) / 10000000.0
+            self.sim_debit_avg = dc_det.get("avg_amount", 0.0)
+            self.sim_debit_risk = risks.get("Debit Card", 0)
+            
+            # Map Credit Card
+            cc_det = details.get("Credit Card", {})
+            self.sim_credit_txs = cc_det.get("count", 0)
+            self.sim_credit_amt = cc_det.get("volume", 0.0) / 10000000.0
+            self.sim_credit_avg = cc_det.get("avg_amount", 0.0)
+            self.sim_credit_risk = risks.get("Credit Card", 0)
+            
+            # Map Net Banking
+            nb_det = details.get("Net Banking", {})
+            self.sim_net_txs = nb_det.get("count", 0)
+            self.sim_net_amt = nb_det.get("volume", 0.0) / 10000000.0
+            self.sim_net_avg = nb_det.get("avg_amount", 0.0)
+            self.sim_net_risk = risks.get("Net Banking", 0)
+            
+            # Map PayPal
+            pp_det = details.get("PayPal", {})
+            self.sim_paypal_txs = pp_det.get("count", 0)
+            self.sim_paypal_amt = pp_det.get("volume", 0.0) / 10000000.0
+            self.sim_paypal_avg = pp_det.get("avg_amount", 0.0)
+            self.sim_paypal_risk = risks.get("PayPal", 0)
+            
+            # Map Other
+            self.sim_other_txs = 0
+            self.sim_other_amt = 0.0
+            self.sim_other_avg = 0.0
+            self.sim_other_risk = 0
+            
         # 0. Recalculate global indicators mathematically
         tx_list = [self.sim_upi_txs, self.sim_debit_txs, self.sim_credit_txs, self.sim_net_txs, self.sim_paypal_txs, self.sim_other_txs]
         amt_list = [self.sim_upi_amt, self.sim_debit_amt, self.sim_credit_amt, self.sim_net_amt, self.sim_paypal_amt, self.sim_other_amt]
