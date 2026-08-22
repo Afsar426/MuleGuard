@@ -6,6 +6,71 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 import networkx as nx
 import os
+import joblib
+import numpy as np
+import pandas as pd
+
+try:
+    from feature_pipeline import FeaturePipeline
+except ImportError:
+    from backend.feature_pipeline import FeaturePipeline
+
+MODELS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "models"))
+LGB_MODEL_PATH = os.path.join(MODELS_DIR, "muleguard_lightgbm.pkl")
+IF_MODEL_PATH = os.path.join(MODELS_DIR, "muleguard_isolation_forest.pkl")
+
+lgb_model = None
+if_model = None
+pipeline = None
+
+def get_pipeline():
+    global pipeline
+    if pipeline is None:
+        pipeline = FeaturePipeline()
+    return pipeline
+
+def get_models():
+    global lgb_model, if_model
+    if lgb_model is None:
+        lgb_model = joblib.load(LGB_MODEL_PATH)
+    if if_model is None:
+        if_model = joblib.load(IF_MODEL_PATH)
+    return lgb_model, if_model
+
+def preprocess_raw_transactions(txs: list) -> list:
+    processed = []
+    for tx in txs:
+        p_tx = tx.copy()
+        p_tx["sender_account"] = tx.get("sender_id", "")
+        p_tx["receiver_account"] = tx.get("receiver_id", "")
+        
+        amt = tx.get("amount", 0.0)
+        p_tx["amount_received"] = p_tx.get("amount_received", amt)
+        p_tx["amount_paid"] = p_tx.get("amount_paid", amt)
+        
+        sender_digits = "".join(filter(str.isdigit, tx.get("sender_id", "")))
+        receiver_digits = "".join(filter(str.isdigit, tx.get("receiver_id", "")))
+        p_tx["from_bank"] = p_tx.get("from_bank", int(sender_digits) % 500 + 1 if sender_digits else 1)
+        p_tx["to_bank"] = p_tx.get("to_bank", int(receiver_digits) % 500 + 1 if receiver_digits else 2)
+        
+        p_tx["receiving_currency"] = p_tx.get("receiving_currency", "Rupee")
+        p_tx["payment_currency"] = p_tx.get("payment_currency", "Rupee")
+        
+        method = tx.get("payment_method", "UPI")
+        method_map = {
+            "UPI": "Wire",
+            "Net Banking": "Wire",
+            "Debit Card": "Credit Card",
+            "Credit Card": "Credit Card",
+            "Cash": "Cash",
+            "Bitcoin": "Bitcoin",
+            "Cheque": "Cheque",
+            "ACH": "ACH",
+            "Wire": "Wire"
+        }
+        p_tx["payment_format"] = p_tx.get("payment_format", method_map.get(method, "Wire"))
+        processed.append(p_tx)
+    return processed
 
 # PDF generation imports
 from reportlab.lib.pagesizes import letter
@@ -570,114 +635,258 @@ def get_network(account_id: str):
 
 @app.get("/risk/{account_id}")
 def get_risk_profile(account_id: str):
-    # Retrieve component risks for explanation
-    if account_id == "ACC-10293":
-        return {
-            "account_id": account_id,
-            "overall_score": 94,
-            "risk_level": "Critical",
-            "components": {
-                "Behavior Risk": 92,
-                "Transaction Risk": 89,
-                "Network Risk": 96,
-                "Velocity Risk": 94,
-                "Location Risk": 78
-            },
-            "history": [
-                {"month": "April", "score": 41},
-                {"month": "May", "score": 48},
-                {"month": "June", "score": 57},
-                {"month": "July", "score": 76},
-                {"month": "August", "score": 94}
-            ]
-        }
-    
     acc = accounts_db.get(account_id)
     if not acc:
         raise HTTPException(status_code=404, detail="Account not found")
         
-    base = acc["risk_score"]
+    account_txs = [t for t in transactions_db if t["sender_id"] == account_id or t["receiver_id"] == account_id]
+    
+    if not account_txs:
+        base = acc["risk_score"]
+        risk_level = acc["risk_level"]
+    else:
+        latest_tx = account_txs[0]
+        try:
+            pipe = get_pipeline()
+            lgb_m, if_m = get_models()
+            
+            processed_latest = preprocess_raw_transactions([latest_tx])[0]
+            processed_history = preprocess_raw_transactions(transactions_db)
+            
+            X_lgb, X_if = pipe.build_features(processed_latest, processed_history)
+            
+            if hasattr(lgb_m, "predict_proba"):
+                p = lgb_m.predict_proba(X_lgb.values)[:, 1][0]
+            else:
+                p = lgb_m.predict(X_lgb.values)[0]
+                
+            base = int(round(p * 100))
+            
+            # Map risk level
+            if base >= 90:
+                risk_level = "Critical"
+            elif base >= 75:
+                risk_level = "High"
+            elif base >= 40:
+                risk_level = "Medium"
+            else:
+                risk_level = "Low/Safe"
+                
+            acc["risk_score"] = base
+            acc["risk_level"] = risk_level
+        except Exception as e:
+            print(f"Prediction error: {e}")
+            base = acc["risk_score"]
+            risk_level = acc["risk_level"]
+            
     history = []
     months = ["April", "May", "June", "July", "August"]
     for idx, m in enumerate(months):
-        hist_score = max(5, min(99, int(base * (0.4 + (idx * 0.15) + random.uniform(-0.1, 0.1)))))
+        hist_score = max(5, min(99, int(base * (0.4 + (idx * 0.15) + random.uniform(-0.05, 0.05)))))
         history.append({"month": m, "score": hist_score})
         
-    # Make August align with current risk score
     history[-1]["score"] = base
-        
+    
     return {
         "account_id": account_id,
         "overall_score": base,
-        "risk_level": acc["risk_level"],
+        "risk_level": risk_level,
         "components": {
-            "Behavior Risk": max(5, min(99, int(base * random.uniform(0.85, 1.15)))),
-            "Transaction Risk": max(5, min(99, int(base * random.uniform(0.85, 1.15)))),
-            "Network Risk": max(5, min(99, int(base * random.uniform(0.85, 1.15)))),
-            "Velocity Risk": max(5, min(99, int(base * random.uniform(0.85, 1.15)))),
-            "Location Risk": max(5, min(99, int(base * random.uniform(0.85, 1.15))))
+            "Behavior Risk": max(5, min(99, int(base * random.uniform(0.9, 1.05)))),
+            "Transaction Risk": max(5, min(99, int(base * random.uniform(0.9, 1.05)))),
+            "Network Risk": max(5, min(99, int(base * random.uniform(0.9, 1.05)))),
+            "Velocity Risk": max(5, min(99, int(base * random.uniform(0.9, 1.05)))),
+            "Location Risk": max(5, min(99, int(base * random.uniform(0.9, 1.05))))
         },
         "history": history
     }
 
+
 @app.get("/explanation/{account_id}")
 def get_explanation(account_id: str):
-    if account_id == "ACC-10293":
-        return {
-            "account_id": account_id,
-            "classification": "SUSPICIOUS",
-            "probability": 94.2,
-            "overall_score": 94,
-            "shap_factors": [
-                {"feature": "Transaction Velocity", "impact": 0.31},
-                {"feature": "Unique Senders", "impact": 0.26},
-                {"feature": "Rapid Fund Movement", "impact": 0.22},
-                {"feature": "Network Connectivity", "impact": 0.18},
-                {"feature": "Amount Deviation", "impact": 0.14},
-                {"feature": "New Beneficiaries", "impact": 0.11}
-            ],
-            "human_explanation": "The account demonstrates a high-volume pass-through pattern. It receives funds from multiple unrelated accounts and transfers a significant portion of those funds within a short period. The account's transaction velocity and network connectivity are substantially higher than its normal behavioral profile.",
-            "recommended_action": "Enhanced Due Diligence / Investigation"
-        }
-        
     acc = accounts_db.get(account_id)
     if not acc:
         raise HTTPException(status_code=404, detail="Account not found")
         
-    score = acc["risk_score"]
+    account_txs = [t for t in transactions_db if t["sender_id"] == account_id or t["receiver_id"] == account_id]
     
-    # Map actions
-    if score >= 90:
-        action = "Enhanced Due Diligence / Investigation"
-        classification = "SUSPICIOUS"
-    elif score >= 75:
-        action = "Manual Review"
-        classification = "SUSPICIOUS"
-    elif score >= 40:
-        action = "Enhanced Monitoring"
-        classification = "FLAGGED"
-    else:
+    if not account_txs:
+        prob = float(acc["risk_score"])
+        shap_factors = [
+            {"feature": "Transaction Velocity", "impact": 0.31},
+            {"feature": "Unique Senders", "impact": 0.26},
+            {"feature": "Amount Deviation", "impact": 0.14}
+        ]
+        human_explanation = f"No transaction history found for account {account_id}."
         action = "Monitor"
         classification = "SAFE"
-        
-    prob = round(score + random.uniform(-2.0, 2.0), 1)
-    prob = max(1.0, min(99.9, prob))
-    
+    else:
+        latest_tx = account_txs[0]
+        try:
+            pipe = get_pipeline()
+            lgb_m, if_m = get_models()
+            
+            processed_latest = preprocess_raw_transactions([latest_tx])[0]
+            processed_history = preprocess_raw_transactions(transactions_db)
+            
+            X_lgb, X_if = pipe.build_features(processed_latest, processed_history)
+            
+            if hasattr(lgb_m, "predict_proba"):
+                p = lgb_m.predict_proba(X_lgb.values)[:, 1][0]
+            else:
+                p = lgb_m.predict(X_lgb.values)[0]
+                
+            prob = round(float(p * 100), 1)
+            
+            # Predict native SHAP values
+            shap_raw = lgb_m.predict(X_lgb.values, pred_contrib=True)
+            shap_raw = np.asarray(shap_raw)
+            shap_values = shap_raw[0, :-1]
+            
+            feature_names_mapping = {
+                "seconds_since_previous": "Transaction Velocity",
+                "sender_unique_receivers": "Unique Receivers",
+                "sender_unique_banks": "Unique Banks Visited",
+                "receiver_unique_senders": "Unique Senders",
+                "receiver_unique_banks": "Receiver Bank Count",
+                "amount_diff": "Amount Deviation",
+                "amount_ratio": "Credit-Debit Ratio",
+                "currency_match": "Currency Match",
+                "same_bank": "Same Bank Transfer",
+                "hour": "Transaction Hour",
+                "day_of_week": "Day of Week",
+                "payment_format": "Payment format (Wire/Cheque)",
+                "amount_paid": "Amount Sent",
+                "amount_received": "Amount Received",
+                "sender_transaction_count": "Sender Tx Count",
+                "sender_total_amount": "Sender Cumulative Vol",
+                "sender_avg_amount": "Sender Average Vol",
+                "sender_max_amount": "Sender Peak Vol",
+                "receiver_transaction_count": "Receiver Tx Count",
+                "receiver_total_amount": "Receiver Cumulative Vol",
+                "receiver_avg_amount": "Receiver Average Vol",
+                "receiver_max_amount": "Receiver Peak Vol",
+                "from_bank": "Sender Bank Code",
+                "to_bank": "Receiver Bank Code",
+                "receiving_currency": "Receiving Currency Code",
+                "payment_currency": "Payment Currency Code"
+            }
+            
+            top_indices = np.argsort(np.abs(shap_values))[::-1][:6]
+            shap_factors = []
+            increases = []
+            decreases = []
+            
+            for idx in top_indices:
+                raw_name = pipe.features[idx]
+                h_name = feature_names_mapping.get(raw_name, raw_name)
+                val = shap_values[idx]
+                
+                # Scale weight
+                impact = round(float(val) / 1000.0, 3) if abs(val) > 1 else round(float(val), 3)
+                if impact == 0:
+                    impact = 0.01 if val > 0 else -0.01
+                    
+                shap_factors.append({
+                    "feature": h_name,
+                    "impact": impact
+                })
+                
+                if val > 0:
+                    increases.append(h_name)
+                else:
+                    decreases.append(h_name)
+                    
+            classification = "SUSPICIOUS" if prob >= 50 else "SAFE"
+            if classification == "SUSPICIOUS":
+                action = "Enhanced Due Diligence / Investigation" if prob >= 90 else "Manual Review"
+                human_explanation = (
+                    f"The account demonstrates highly suspicious indicators. The risk is primarily "
+                    f"driven by {', '.join(increases[:3])} which significantly increase the risk profile. "
+                    f"Conversely, {', '.join(decreases[:2]) if decreases else 'no active factors'} provide mitigating balance."
+                )
+            else:
+                action = "Enhanced Monitoring" if prob >= 40 else "Monitor"
+                human_explanation = (
+                    f"The account transaction profile appears relatively normal. Key mitigating factors "
+                    f"include {', '.join(decreases[:3]) if decreases else 'general transaction stability'}, keeping the "
+                    f"overall model probability at {prob}%."
+                )
+        except Exception as e:
+            print(f"Explanation error: {e}")
+            prob = float(acc["risk_score"])
+            shap_factors = [
+                {"feature": "Transaction Velocity", "impact": 0.31},
+                {"feature": "Unique Senders", "impact": 0.26},
+                {"feature": "Amount Deviation", "impact": 0.14}
+            ]
+            human_explanation = f"Error processing SHAP model features: {str(e)}."
+            action = "Manual Review"
+            classification = "SUSPICIOUS" if prob >= 50 else "SAFE"
+            
     return {
         "account_id": account_id,
         "classification": classification,
         "probability": prob,
-        "overall_score": score,
-        "shap_factors": [
-            {"feature": "Transaction Velocity", "impact": round(random.uniform(0.05, 0.4), 2)},
-            {"feature": "Unique Senders", "impact": round(random.uniform(0.05, 0.35), 2)},
-            {"feature": "Amount Deviation", "impact": round(random.uniform(-0.1, 0.3), 2)},
-            {"feature": "Network Density", "impact": round(random.uniform(-0.05, 0.25), 2)},
-            {"feature": "Location Dispersion", "impact": round(random.uniform(-0.1, 0.2), 2)}
-        ],
-        "human_explanation": f"The account exhibits anomalies in its transaction frequency and counterparties. The risk profile is driven by a score of {score}/100, showing elevated patterns compared to regional benchmarks.",
+        "overall_score": int(prob),
+        "shap_factors": shap_factors,
+        "human_explanation": human_explanation,
         "recommended_action": action
     }
+
+class TransactionInput(BaseModel):
+    transaction_id: str
+    timestamp: str
+    sender_account: str
+    receiver_account: str
+    amount: float
+    payment_method: str
+    from_bank: Optional[int] = None
+    to_bank: Optional[int] = None
+    receiving_currency: Optional[str] = "Rupee"
+    payment_currency: Optional[str] = "Rupee"
+    payment_format: Optional[str] = None
+
+@app.post("/predict")
+def predict_transaction(tx: TransactionInput):
+    try:
+        pipe = get_pipeline()
+        lgb_m, if_m = get_models()
+        
+        tx_dict = tx.dict()
+        tx_dict["sender_id"] = tx.sender_account
+        tx_dict["receiver_id"] = tx.receiver_account
+        tx_dict["amount_received"] = tx.amount
+        tx_dict["amount_paid"] = tx.amount
+        
+        processed_tx = preprocess_raw_transactions([tx_dict])[0]
+        processed_history = preprocess_raw_transactions(transactions_db)
+        
+        X_lgb, X_if = pipe.build_features(processed_tx, processed_history)
+        
+        if hasattr(lgb_m, "predict_proba"):
+            p = lgb_m.predict_proba(X_lgb.values)[:, 1][0]
+        else:
+            p = lgb_m.predict(X_lgb.values)[0]
+            
+        decision_score = if_m.decision_function(X_if.values)[0]
+        anomaly_score = -decision_score
+        
+        shap_raw = lgb_m.predict(X_lgb.values, pred_contrib=True)
+        shap_raw = np.asarray(shap_raw)
+        shap_values = shap_raw[0, :-1].tolist()
+        
+        return {
+            "transaction_id": tx.transaction_id,
+            "risk_probability": float(p),
+            "risk_score": float(p * 100),
+            "anomaly_score": float(anomaly_score),
+            "is_anomaly": bool(anomaly_score > 0),
+            "shap_values": shap_values,
+            "feature_names": pipe.features
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Inference error: {str(e)}")
 
 @app.get("/analytics/monthly")
 def get_analytics_monthly():

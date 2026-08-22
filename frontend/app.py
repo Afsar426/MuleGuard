@@ -253,8 +253,19 @@ class ApiClient:
         self.local_transactions = []
         self.local_alerts = []
         self._initialize_local_mock_db()
+        self.check_health()
         
     def check_health(self):
+        try:
+            r = requests.get(f"{self.base_url}/health", timeout=0.5)
+            if r.status_code == 200:
+                self.is_connected = True
+                self.local_mode = False
+                return r.json()
+        except Exception:
+            pass
+        self.is_connected = False
+        self.local_mode = True
         return {
             "status": "warning",
             "api": "offline (sandbox)",
@@ -263,18 +274,33 @@ class ApiClient:
         }
         
     def login(self, emp_id, password):
+        if not self.local_mode:
+            try:
+                r = requests.post(f"{self.base_url}/login", json={"employee_id": emp_id, "password": password}, timeout=2.0)
+                if r.status_code == 200:
+                    return r.json()
+            except Exception as e:
+                print(f"API login error: {e}")
+        # Fallback
         if emp_id == "admin" or "@" in emp_id:
             return {"status": "success", "employee_id": emp_id, "token": "local-token-1234"}
         return None
         
     def get_dashboard(self):
+        if not self.local_mode:
+            try:
+                r = requests.get(f"{self.base_url}/dashboard", timeout=2.0)
+                if r.status_code == 200:
+                    return r.json()
+            except Exception as e:
+                print(f"API dashboard error: {e}")
+                
+        # Fallback
         fraud_cnt = sum(1 for tx in self.local_transactions if tx["status"] == "FLAGGED")
         total_credit = sum(a["credit_amount"] for a in self.local_accounts.values())
         total_debit = sum(a["debit_amount"] for a in self.local_accounts.values())
-        
         recent_alerts = self.local_alerts[:5]
         susp_accounts = [a for a in self.local_accounts.values() if a["risk_score"] >= 80][:6]
-        
         return {
             "total_accounts": len(self.local_accounts),
             "total_tx_amount": sum(tx["amount"] for tx in self.local_transactions),
@@ -294,6 +320,16 @@ class ApiClient:
         }
         
     def get_accounts(self, search="", risk_level="All", region="All"):
+        if not self.local_mode:
+            try:
+                params = {"search": search, "risk_level": risk_level, "region": region}
+                r = requests.get(f"{self.base_url}/accounts", params=params, timeout=2.0)
+                if r.status_code == 200:
+                    return r.json()
+            except Exception as e:
+                print(f"API accounts error: {e}")
+                
+        # Fallback
         filtered = list(self.local_accounts.values())
         if search:
             s_lower = search.lower()
@@ -312,9 +348,27 @@ class ApiClient:
         return {"total": len(filtered), "accounts": filtered}
         
     def get_account_detail(self, acc_id):
+        if not self.local_mode:
+            try:
+                r = requests.get(f"{self.base_url}/accounts/{acc_id}", timeout=2.0)
+                if r.status_code == 200:
+                    return r.json()
+            except Exception as e:
+                print(f"API account detail error: {e}")
+        # Fallback
         return self.local_accounts.get(acc_id)
         
     def get_transactions(self, account_id=None, search="", risk_level="All", payment_method="All"):
+        if not self.local_mode:
+            try:
+                params = {"account_id": account_id, "search": search, "risk_level": risk_level, "payment_method": payment_method}
+                r = requests.get(f"{self.base_url}/transactions", params=params, timeout=2.0)
+                if r.status_code == 200:
+                    return r.json()
+            except Exception as e:
+                print(f"API transactions error: {e}")
+                
+        # Fallback
         filtered = self.local_transactions
         if account_id:
             filtered = [t for t in filtered if t["sender_id"] == account_id or t["receiver_id"] == account_id]
@@ -332,9 +386,26 @@ class ApiClient:
         return {"total": len(filtered), "transactions": filtered}
         
     def get_alerts(self):
+        if not self.local_mode:
+            try:
+                r = requests.get(f"{self.base_url}/alerts", timeout=2.0)
+                if r.status_code == 200:
+                    return r.json()
+            except Exception as e:
+                print(f"API alerts error: {e}")
+        # Fallback
         return self.local_alerts
         
     def get_network(self, acc_id):
+        if not self.local_mode:
+            try:
+                r = requests.get(f"{self.base_url}/network/{acc_id}", timeout=2.0)
+                if r.status_code == 200:
+                    return r.json()
+            except Exception as e:
+                print(f"API network error: {e}")
+                
+        # Fallback
         primary = self.local_accounts.get(acc_id, {"account_id": acc_id, "holder_name": "Unknown", "risk_score": 50, "risk_level": "Medium"})
         nodes = [{
             "id": primary["account_id"],
@@ -379,6 +450,15 @@ class ApiClient:
         }
         
     def get_risk(self, acc_id):
+        if not self.local_mode:
+            try:
+                r = requests.get(f"{self.base_url}/risk/{acc_id}", timeout=2.0)
+                if r.status_code == 200:
+                    return r.json()
+            except Exception as e:
+                print(f"API risk error: {e}")
+                
+        # Fallback
         return {
             "account_id": acc_id,
             "overall_score": 94 if acc_id == "ACC-10293" else 45,
@@ -400,6 +480,15 @@ class ApiClient:
         }
         
     def get_explanation(self, acc_id):
+        if not self.local_mode:
+            try:
+                r = requests.get(f"{self.base_url}/explanation/{acc_id}", timeout=2.0)
+                if r.status_code == 200:
+                    return r.json()
+            except Exception as e:
+                print(f"API explanation error: {e}")
+                
+        # Fallback
         return {
             "account_id": acc_id,
             "classification": "SUSPICIOUS" if acc_id == "ACC-10293" else "SAFE",
@@ -418,6 +507,40 @@ class ApiClient:
         }
         
     def get_analytics_monthly(self):
+        if not self.local_mode:
+            try:
+                r = requests.get(f"{self.base_url}/analytics/monthly", timeout=2.0)
+                if r.status_code == 200:
+                    data = r.json()
+                    aug = data.get("august", {})
+                    jul = data.get("july", {})
+                    tx_change = 0.0
+                    if jul.get("fraud_transactions", 0) > 0:
+                        tx_change = round(((aug.get("fraud_transactions", 0) - jul.get("fraud_transactions", 0)) / jul.get("fraud_transactions", 0)) * 100, 1)
+                    amt_change = 0.0
+                    if jul.get("fraud_amount_lakhs", 0) > 0:
+                        amt_change = round(((aug.get("fraud_amount_lakhs", 0) - jul.get("fraud_amount_lakhs", 0)) / jul.get("fraud_amount_lakhs", 0)) * 100, 1)
+                    acc_change = 0.0
+                    if jul.get("suspicious_accounts", 0) > 0:
+                        acc_change = round(((aug.get("suspicious_accounts", 0) - jul.get("suspicious_accounts", 0)) / jul.get("suspicious_accounts", 0)) * 100, 1)
+                        
+                    return {
+                        "august": aug,
+                        "july": jul,
+                        "changes": {
+                            "fraud_transactions_pct": tx_change,
+                            "fraud_amount_pct": amt_change,
+                            "suspicious_accounts_pct": acc_change
+                        },
+                        "history": [
+                            {"month": "March", "count": 2}, {"month": "April", "count": 3}, {"month": "May", "count": 5},
+                            {"month": "June", "count": 6}, {"month": "July", "count": jul.get("fraud_transactions", 9)}, {"month": "August", "count": aug.get("fraud_transactions", 14)}
+                        ]
+                    }
+            except Exception as e:
+                print(f"API analytics error: {e}")
+                
+        # Fallback
         return {
             "august": {"month": "August 2026", "fraud_transactions": 14, "fraud_amount_lakhs": 8.7, "suspicious_accounts": 6},
             "july": {"month": "July 2026", "fraud_transactions": 9, "fraud_amount_lakhs": 4.2, "suspicious_accounts": 3},
@@ -429,6 +552,14 @@ class ApiClient:
         }
         
     def get_regional_risk(self):
+        if not self.local_mode:
+            try:
+                r = requests.get(f"{self.base_url}/regional-risk", timeout=2.0)
+                if r.status_code == 200:
+                    return r.json()
+            except Exception as e:
+                print(f"API regional risk error: {e}")
+        # Fallback
         return [
             {"region": "Madhya Pradesh", "accounts_count": 1842, "transactions_count": 18421, "fraud_count": 42, "volume": 1240000.0, "active_alerts": 8, "risk": "HIGH"},
             {"region": "Maharashtra", "accounts_count": 2984, "transactions_count": 28401, "fraud_count": 51, "volume": 3450000.0, "active_alerts": 12, "risk": "CRITICAL"},
@@ -438,6 +569,14 @@ class ApiClient:
         ]
         
     def get_payment_methods(self):
+        if not self.local_mode:
+            try:
+                r = requests.get(f"{self.base_url}/payment-methods", timeout=2.0)
+                if r.status_code == 200:
+                    return r.json()
+            except Exception as e:
+                print(f"API payment methods error: {e}")
+        # Fallback
         return {
             "distribution": {"UPI": 62, "Debit Card": 24, "Credit Card": 9, "Net Banking": 5, "PayPal": 0},
             "risk_levels": {"UPI": 84, "Debit Card": 45, "Credit Card": 30, "Net Banking": 52, "PayPal": 10}
@@ -491,7 +630,7 @@ class ApiClient:
         except Exception as e:
             print("Offline PDF Error:", e)
             return False
-
+            
     def update_account(self, acc_id, name, acc_number, ifsc_code, region, risk_score):
         if acc_id in self.local_accounts:
             acc = self.local_accounts[acc_id]
