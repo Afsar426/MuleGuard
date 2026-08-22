@@ -2,6 +2,8 @@ import sys
 import os
 import random
 import requests
+import json
+import websocket
 from datetime import datetime, timedelta
 
 from PySide6.QtWidgets import (
@@ -10,7 +12,7 @@ from PySide6.QtWidgets import (
     QTableWidgetItem, QHeaderView, QStackedWidget, QTabWidget,
     QDialog, QMessageBox, QCheckBox, QFrame, QScrollArea, QSplitter, QFormLayout, QProgressBar
 )
-from PySide6.QtCore import Qt, QTimer, QSize, Signal, Slot
+from PySide6.QtCore import Qt, QTimer, QSize, Signal, Slot, QThread
 from PySide6.QtGui import QFont, QColor, QPainter, QBrush, QPen, QPainterPath, QPixmap
 
 # Matplotlib & NetworkX Imports
@@ -240,6 +242,47 @@ QTabWidget::pane {{
 }}
 """
 
+class AnalyticsWebSocketThread(QThread):
+    data_received = Signal(dict)
+    
+    def __init__(self, ws_url="ws://127.0.0.1:8000/ws/analytics"):
+        super().__init__()
+        self.ws_url = ws_url
+        self.running = True
+        self.ws = None
+        
+    def run(self):
+        while self.running:
+            try:
+                self.ws = websocket.WebSocketApp(
+                    self.ws_url,
+                    on_message=self.on_message,
+                    on_error=self.on_error,
+                    on_close=self.on_close
+                )
+                self.ws.run_forever()
+            except Exception as e:
+                print(f"WS thread connection error: {e}")
+            self.msleep(3000) # retry after 3 seconds if disconnected
+            
+    def on_message(self, ws, message):
+        try:
+            data = json.loads(message)
+            self.data_received.emit(data)
+        except Exception as e:
+            print(f"Error parsing WS message: {e}")
+            
+    def on_error(self, ws, error):
+        print(f"WS error: {error}")
+        
+    def on_close(self, ws, close_status_code, close_msg):
+        print("WS connection closed")
+        
+    def stop(self):
+        self.running = False
+        if self.ws:
+            self.ws.close()
+
 # ---------------------------------------------------------
 # SANDBOX RESILIENT API CLIENT (FORCED LOCAL BY DEFAULT)
 # ---------------------------------------------------------
@@ -248,6 +291,9 @@ class ApiClient:
         self.base_url = base_url
         self.is_connected = False
         self.local_mode = True # Default local sandbox
+        self.cached_dashboard = None
+        self.cached_regional = None
+        self.cached_payment_methods = None
         
         self.local_accounts = {}
         self.local_transactions = []
@@ -287,6 +333,8 @@ class ApiClient:
         return None
         
     def get_dashboard(self):
+        if self.cached_dashboard:
+            return self.cached_dashboard
         if not self.local_mode:
             try:
                 r = requests.get(f"{self.base_url}/dashboard", timeout=2.0)
@@ -552,6 +600,8 @@ class ApiClient:
         }
         
     def get_regional_risk(self):
+        if self.cached_regional:
+            return self.cached_regional
         if not self.local_mode:
             try:
                 r = requests.get(f"{self.base_url}/regional-risk", timeout=2.0)
@@ -569,6 +619,8 @@ class ApiClient:
         ]
         
     def get_payment_methods(self):
+        if self.cached_payment_methods:
+            return self.cached_payment_methods
         if not self.local_mode:
             try:
                 r = requests.get(f"{self.base_url}/payment-methods", timeout=2.0)
@@ -1752,6 +1804,12 @@ class MainWindow(QMainWindow):
         self.central_widget.setCurrentIndex(1)
         self.switch_content_page(0)
         
+        # Start background WebSocket thread
+        if not hasattr(self, "ws_thread") or not self.ws_thread.isRunning():
+            self.ws_thread = AnalyticsWebSocketThread()
+            self.ws_thread.data_received.connect(self.on_websocket_data_received)
+            self.ws_thread.start()
+        
     def handle_logout(self):
         dialog = LogoutDialog(self)
         if dialog.exec():
@@ -1759,6 +1817,55 @@ class MainWindow(QMainWindow):
             self.login_view.txt_pwd.clear()
             self.login_view.lbl_error.setText("")
             self.central_widget.setCurrentIndex(0)
+            if hasattr(self, "ws_thread"):
+                self.ws_thread.stop()
+                self.ws_thread.wait()
+                
+    @Slot(dict)
+    def on_websocket_data_received(self, data):
+        self.api.cached_dashboard = data
+        self.api.cached_regional = data.get("regional_risk")
+        self.api.cached_payment_methods = data.get("payment_methods")
+        
+        current_widget = self.content_stack.currentWidget()
+        if current_widget == self.page_dashboard:
+            try:
+                self.page_dashboard.update_with_stream_data(data)
+            except Exception as e:
+                print(f"Error updating dashboard stream data: {e}")
+        elif current_widget == self.page_regional:
+            try:
+                self.page_regional.load_data()
+            except Exception as e:
+                print(f"Error updating regional risk data: {e}")
+        elif current_widget == self.page_methods:
+            try:
+                p_methods = data.get("payment_methods", {})
+                dist = p_methods.get("distribution", {})
+                risks = p_methods.get("risk_levels", {})
+                
+                total_txs = data.get("total_accounts", 100) * 15
+                self.page_methods.sim_upi_txs = int(total_txs * dist.get("UPI", 62) / 100)
+                self.page_methods.sim_debit_txs = int(total_txs * dist.get("Debit Card", 24) / 100)
+                self.page_methods.sim_credit_txs = int(total_txs * dist.get("Credit Card", 9) / 100)
+                self.page_methods.sim_net_txs = int(total_txs * dist.get("Net Banking", 5) / 100)
+                self.page_methods.sim_paypal_txs = int(total_txs * dist.get("PayPal", 0) / 100)
+                
+                self.page_methods.sim_upi_risk = risks.get("UPI", 28)
+                self.page_methods.sim_debit_risk = risks.get("Debit Card", 24)
+                self.page_methods.sim_credit_risk = risks.get("Credit Card", 35)
+                self.page_methods.sim_net_risk = risks.get("Net Banking", 45)
+                self.page_methods.sim_paypal_risk = risks.get("PayPal", 10)
+                
+                self.page_methods.load_data()
+            except Exception as e:
+                print(f"Error updating payment methods data: {e}")
+
+    def closeEvent(self, event):
+        if hasattr(self, "ws_thread"):
+            self.ws_thread.stop()
+            self.ws_thread.wait()
+        event.accept()
 
 
 # ---------------------------------------------------------
@@ -1927,6 +2034,44 @@ class DashboardView(QWidget):
             badge = TableBadgeLabel(str(acc["risk_score"]), "critical" if acc["risk_score"]>=90 else "high")
             self.tbl_accounts.setCellWidget(row, 2, badge)
             
+            self.tbl_accounts.setItem(row, 3, QTableWidgetItem(acc["region"]))
+            self.tbl_accounts.setItem(row, 4, QTableWidgetItem(acc["status"]))
+            
+    def update_with_stream_data(self, data):
+        self.card_widgets["Total Accounts"].setText(f"{data.get('total_accounts', 12450):,}")
+        self.card_widgets["Total Transaction Amount"].setText(f"₹{data.get('total_tx_amount', 84.6*10000000)/10000000:.1f} Cr")
+        self.card_widgets["Total Credit"].setText(f"₹{data.get('total_credit', 42.8*10000000)/10000000:.1f} Cr")
+        self.card_widgets["Total Debit"].setText(f"₹{data.get('total_debit', 41.8*10000000)/10000000:.1f} Cr")
+        self.card_widgets["Fraud Transactions"].setText(str(data.get('fraud_transactions', 137)))
+        self.card_widgets["Active Alerts"].setText(str(data.get('active_alerts', 24)))
+        
+        self.render_activity_chart(data["chart_data"])
+        
+        # Fill alerts
+        alerts = data.get("recent_alerts", [])
+        self.tbl_alerts.setRowCount(len(alerts))
+        for row, al in enumerate(alerts):
+            self.tbl_alerts.setItem(row, 0, QTableWidgetItem(al["alert_id"]))
+            self.tbl_alerts.setItem(row, 1, QTableWidgetItem(al["account_id"]))
+            self.tbl_alerts.setItem(row, 2, QTableWidgetItem(al["alert_type"]))
+            badge = TableBadgeLabel(f"{al['risk_score']} {al['risk_level']}", al["risk_level"].lower())
+            self.tbl_alerts.setCellWidget(row, 3, badge)
+            self.tbl_alerts.setItem(row, 4, QTableWidgetItem(f"₹{al['amount']:,}"))
+            
+            btn = QPushButton("Investigate")
+            btn.setProperty("class", "PrimaryButton")
+            btn.setStyleSheet("padding: 2px 6px; font-size: 11px;")
+            btn.clicked.connect(lambda checked, acc_id=al["account_id"]: self.main_window.investigate_account(acc_id))
+            self.tbl_alerts.setCellWidget(row, 5, btn)
+            
+        # Fill accounts
+        accs = data.get("suspicious_accounts", [])
+        self.tbl_accounts.setRowCount(len(accs))
+        for row, acc in enumerate(accs):
+            self.tbl_accounts.setItem(row, 0, QTableWidgetItem(acc["account_id"]))
+            self.tbl_accounts.setItem(row, 1, QTableWidgetItem(acc["holder_name"]))
+            badge = TableBadgeLabel(str(acc["risk_score"]), "critical" if acc["risk_score"]>=90 else "high")
+            self.tbl_accounts.setCellWidget(row, 2, badge)
             self.tbl_accounts.setItem(row, 3, QTableWidgetItem(acc["region"]))
             self.tbl_accounts.setItem(row, 4, QTableWidgetItem(acc["status"]))
             

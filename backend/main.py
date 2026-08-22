@@ -1,7 +1,7 @@
 import random
 from datetime import datetime, timedelta
 from typing import Optional, List
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 import networkx as nx
@@ -11,9 +11,19 @@ import numpy as np
 import pandas as pd
 
 try:
+    from database import (
+        fetch_accounts, fetch_account_detail, 
+        fetch_transactions, fetch_alerts, update_account_score, insert_transaction, insert_risk_prediction
+    )
     from feature_pipeline import FeaturePipeline
 except ImportError:
+    from backend.database import (
+        fetch_accounts, fetch_account_detail, 
+        fetch_transactions, fetch_alerts, update_account_score, insert_transaction, insert_risk_prediction
+    )
     from backend.feature_pipeline import FeaturePipeline
+
+
 
 MODELS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "models"))
 LGB_MODEL_PATH = os.path.join(MODELS_DIR, "muleguard_lightgbm.pkl")
@@ -86,294 +96,12 @@ app = FastAPI(title="MuleGuard API", version="1.0.0")
 # Set random seed for consistency
 random.seed(42)
 
-# Global memory storage
-accounts_db = {}
-transactions_db = []
-alerts_db = []
-regional_db = []
-payment_methods_db = {}
-
 # Constants from Specification
 COLOR_DEEP_NAVY = "#0B1F33"
 COLOR_PRIMARY_BLUE = "#155EEF"
 COLOR_SOFT_GRAY = "#F5F7FA"
 COLOR_DARK_NAVY = "#172B4D"
 COLOR_SLATE = "#667085"
-
-# Setup data
-INDIAN_NAMES = [
-    "Aarav Sharma", "Vihaan Patel", "Aditya Iyer", "Sai Reddy", "Reyansh Gupta",
-    "Arjun Verma", "Krishna Nair", "Ishaan Joshi", "Shaurya Choudhury", "Aayush Rao",
-    "Ananya Sen", "Diya Mishra", "Pari Saxena", "Kiara Bhat", "Saisha Kulkarni",
-    "Aadhya Deshmukh", "Zara Mehra", "Prisha Kapoor", "Anika Prasad", "Sanya Goel"
-]
-REGIONS = ["Madhya Pradesh", "Maharashtra", "Karnataka", "Delhi", "Tamil Nadu", "Gujarat", "Uttar Pradesh", "West Bengal"]
-CITIES = {
-    "Madhya Pradesh": ["Indore", "Bhopal", "Gwalior"],
-    "Maharashtra": ["Mumbai", "Pune", "Nagpur"],
-    "Karnataka": ["Bangalore", "Mysore", "Hubli"],
-    "Delhi": ["New Delhi", "Dwarka", "Rohini"],
-    "Tamil Nadu": ["Chennai", "Coimbatore", "Madurai"],
-    "Gujarat": ["Ahmedabad", "Surat", "Vadodara"],
-    "Uttar Pradesh": ["Lucknow", "Kanpur", "Noida"],
-    "West Bengal": ["Kolkata", "Howrah", "Darjeeling"]
-}
-
-def generate_mock_data():
-    global accounts_db, transactions_db, alerts_db, regional_db, payment_methods_db
-    
-    # 1. Accounts Database (12,450 accounts)
-    total_accounts = 12450
-    
-    # Create the specific target account ACC-10293
-    target_id = "ACC-10293"
-    accounts_db[target_id] = {
-        "account_id": target_id,
-        "holder_name": "Aarav Sharma",
-        "account_number": "XXXX XXXX 1029",
-        "ifsc_code": "XXXX0001234",
-        "region": "Madhya Pradesh",
-        "city": "Indore",
-        "age_months": 8,
-        "credit_amount": 1840000.0, # ₹18.4L
-        "debit_amount": 1790000.0,  # ₹17.9L
-        "risk_score": 94,
-        "risk_level": "Critical",
-        "status": "Under Investigation",
-        "payment_methods": ["UPI", "Debit Card", "Credit Card", "Net Banking"],
-        "avg_transaction": 12500.0,
-        "max_transaction": 85000.0,
-        "min_transaction": 150.0,
-        "daily_volume": 12
-    }
-    
-    # Add other mock accounts
-    for i in range(10000, 10000 + total_accounts - 1):
-        acc_id = f"ACC-{i}"
-        if acc_id == target_id:
-            continue
-        
-        region = random.choice(REGIONS)
-        city = random.choice(CITIES[region])
-        age = random.randint(1, 120)
-        risk = random.randint(5, 95)
-        
-        if risk >= 90:
-            risk_lvl = "Critical"
-            status = random.choice(["Under Investigation", "Open Alert"])
-        elif risk >= 75:
-            risk_lvl = "High"
-            status = random.choice(["Open Alert", "Monitored"])
-        elif risk >= 40:
-            risk_lvl = "Medium"
-            status = "Monitored"
-        else:
-            risk_lvl = "Low/Safe"
-            status = "Active"
-            
-        credit = round(random.uniform(5000, 5000000), 2)
-        debit = round(credit * random.uniform(0.8, 1.15), 2)
-        
-        methods = random.sample(["UPI", "Debit Card", "Credit Card", "Net Banking", "PayPal"], k=random.randint(1, 4))
-        
-        accounts_db[acc_id] = {
-            "account_id": acc_id,
-            "holder_name": random.choice(INDIAN_NAMES) + f" #{i-9999}",
-            "account_number": f"XXXX XXXX {random.randint(1000, 9999)}",
-            "ifsc_code": f"XXXX000{random.randint(1000, 9999)}",
-            "region": region,
-            "city": city,
-            "age_months": age,
-            "credit_amount": credit,
-            "debit_amount": debit,
-            "risk_score": risk,
-            "risk_level": risk_lvl,
-            "status": status,
-            "payment_methods": methods,
-            "avg_transaction": round(debit / random.randint(10, 100), 2),
-            "max_transaction": round(debit * random.uniform(0.1, 0.4), 2),
-            "min_transaction": round(random.uniform(10, 500), 2),
-            "daily_volume": random.randint(1, 25)
-        }
-        
-    # Ensure sender ACC-4412 exists
-    accounts_db["ACC-4412"] = {
-        "account_id": "ACC-4412",
-        "holder_name": "Rohan Deshmukh",
-        "account_number": "XXXX XXXX 4412",
-        "ifsc_code": "XXXX0009876",
-        "region": "Maharashtra",
-        "city": "Mumbai",
-        "age_months": 24,
-        "credit_amount": 4500000.0,
-        "debit_amount": 4200000.0,
-        "risk_score": 35,
-        "risk_level": "Low/Safe",
-        "status": "Active",
-        "payment_methods": ["UPI", "Net Banking"],
-        "avg_transaction": 22000.0,
-        "max_transaction": 120000.0,
-        "min_transaction": 100.0,
-        "daily_volume": 4
-    }
-
-    # 2. Alerts (24 active alerts)
-    # Target Alert AL-10492 for Aarav Sharma
-    alerts_db.append({
-        "alert_id": "AL-10492",
-        "account_id": target_id,
-        "holder_name": "Aarav Sharma",
-        "alert_type": "Rapid Fund Movement",
-        "risk_score": 94,
-        "risk_level": "Critical",
-        "amount": 85000.0,
-        "detected_time": (datetime.now() - timedelta(minutes=2)).strftime("%Y-%m-%d %H:%M:%S"),
-        "status": "Open"
-    })
-    
-    alert_types = [
-        "Rapid Fund Movement", "Unusual Transaction Velocity", "High Incoming Volume",
-        "High Outgoing Volume", "Suspicious Counterparty", "Circular Transaction",
-        "New Beneficiary", "Location Anomaly", "Payment Pattern Anomaly"
-    ]
-    
-    # Generate 23 other alerts
-    high_risk_accs = [k for k, v in accounts_db.items() if v["risk_score"] >= 75 and k != target_id]
-    for idx, acc_id in enumerate(random.sample(high_risk_accs, 23)):
-        acc = accounts_db[acc_id]
-        alerts_db.append({
-            "alert_id": f"AL-{10493 + idx}",
-            "account_id": acc_id,
-            "holder_name": acc["holder_name"],
-            "alert_type": random.choice(alert_types),
-            "risk_score": acc["risk_score"],
-            "risk_level": acc["risk_level"],
-            "amount": round(random.uniform(10000, 500000), 2),
-            "detected_time": (datetime.now() - timedelta(minutes=random.randint(10, 1440))).strftime("%Y-%m-%d %H:%M:%S"),
-            "status": "Open"
-        })
-
-    # 3. Transactions (Generate historic + specific transactions)
-    # The target transaction TX-82921 for Aarav Sharma
-    tx_time = (datetime.now() - timedelta(minutes=2)).strftime("%Y-%m-%d %H:%M:%S")
-    target_tx = {
-        "transaction_id": "TX-82921",
-        "timestamp": tx_time,
-        "sender_id": "ACC-4412",
-        "sender_name": "Rohan Deshmukh",
-        "receiver_id": target_id,
-        "receiver_name": "Aarav Sharma",
-        "amount": 85000.0,
-        "transaction_type": "Credit",
-        "payment_method": "UPI",
-        "region": "Madhya Pradesh",
-        "city": "Indore",
-        "risk_score": 94,
-        "risk_level": "Critical",
-        "status": "FLAGGED",
-        "reasons": ["Unusual amount", "New beneficiary", "High transaction velocity", "Suspicious network relationship", "Unusual time"]
-    }
-    transactions_db.append(target_tx)
-    
-    # Generate network specific connections for ACC-10293
-    # ACC-201 -> ACC-10293
-    transactions_db.append({
-        "transaction_id": f"TX-{random.randint(20000, 29999)}",
-        "timestamp": (datetime.now() - timedelta(hours=3)).strftime("%Y-%m-%d %H:%M:%S"),
-        "sender_id": "ACC-201", "sender_name": "External Sender A", "receiver_id": target_id, "receiver_name": "Aarav Sharma",
-        "amount": 45000.0, "transaction_type": "Credit", "payment_method": "UPI", "region": "Madhya Pradesh", "city": "Indore",
-        "risk_score": 82, "risk_level": "High", "status": "FLAGGED", "reasons": ["High incoming volume"]
-    })
-    # ACC-305 -> ACC-10293
-    transactions_db.append({
-        "transaction_id": f"TX-{random.randint(20000, 29999)}",
-        "timestamp": (datetime.now() - timedelta(hours=5)).strftime("%Y-%m-%d %H:%M:%S"),
-        "sender_id": "ACC-305", "sender_name": "External Sender B", "receiver_id": target_id, "receiver_name": "Aarav Sharma",
-        "amount": 12000.0, "transaction_type": "Credit", "payment_method": "Net Banking", "region": "Madhya Pradesh", "city": "Indore",
-        "risk_score": 60, "risk_level": "Medium", "status": "APPROVED", "reasons": []
-    })
-    # ACC-10293 -> ACC-901
-    transactions_db.append({
-        "transaction_id": f"TX-{random.randint(20000, 29999)}",
-        "timestamp": (datetime.now() - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S"),
-        "sender_id": target_id, "sender_name": "Aarav Sharma", "receiver_id": "ACC-901", "receiver_name": "External Receiver A",
-        "amount": 55000.0, "transaction_type": "Debit", "payment_method": "UPI", "region": "Maharashtra", "city": "Mumbai",
-        "risk_score": 90, "risk_level": "Critical", "status": "FLAGGED", "reasons": ["Pass-through behavior"]
-    })
-    # ACC-10293 -> ACC-405
-    transactions_db.append({
-        "transaction_id": f"TX-{random.randint(20000, 29999)}",
-        "timestamp": (datetime.now() - timedelta(minutes=45)).strftime("%Y-%m-%d %H:%M:%S"),
-        "sender_id": target_id, "sender_name": "Aarav Sharma", "receiver_id": "ACC-405", "receiver_name": "External Receiver B",
-        "amount": 28000.0, "transaction_type": "Debit", "payment_method": "UPI", "region": "Delhi", "city": "New Delhi",
-        "risk_score": 88, "risk_level": "High", "status": "FLAGGED", "reasons": ["Rapid transfer outgoing"]
-    })
-    
-    # Generic transactions across other accounts
-    all_keys = list(accounts_db.keys())
-    for i in range(1500):
-        s_id = random.choice(all_keys)
-        r_id = random.choice(all_keys)
-        while r_id == s_id:
-            r_id = random.choice(all_keys)
-            
-        sender = accounts_db[s_id]
-        receiver = accounts_db[r_id]
-        amt = round(random.uniform(500, 150000), 2)
-        
-        # Decide type
-        tx_type = random.choice(["Credit", "Debit"])
-        method = random.choice(sender["payment_methods"])
-        
-        risk = max(sender["risk_score"], receiver["risk_score"]) - random.randint(0, 15)
-        risk = max(5, min(99, risk))
-        
-        if risk >= 85:
-            risk_lvl = "Critical"
-            status = "FLAGGED"
-            reasons = random.sample(["Unusual amount", "High velocity", "Suspicious sender", "Regional Anomaly"], k=random.randint(1, 2))
-        else:
-            risk_lvl = "Low/Safe" if risk < 40 else "Medium"
-            status = "APPROVED"
-            reasons = []
-            
-        transactions_db.append({
-            "transaction_id": f"TX-{82922 + i}",
-            "timestamp": (datetime.now() - timedelta(days=random.randint(0, 180), hours=random.randint(0, 23), minutes=random.randint(0, 59))).strftime("%Y-%m-%d %H:%M:%S"),
-            "sender_id": s_id,
-            "sender_name": sender["holder_name"],
-            "receiver_id": r_id,
-            "receiver_name": receiver["holder_name"],
-            "amount": amt,
-            "transaction_type": tx_type,
-            "payment_method": method,
-            "region": sender["region"],
-            "city": sender["city"],
-            "risk_score": risk,
-            "risk_level": risk_lvl,
-            "status": status,
-            "reasons": reasons
-        })
-
-    # Sort transactions by date descending
-    transactions_db.sort(key=lambda x: x["timestamp"], reverse=True)
-
-    # 4. Regional Statistics
-    regional_db = [
-        {"region": "Madhya Pradesh", "accounts_count": 1842, "transactions_count": 18421, "fraud_count": 42, "volume": 1240000.0, "active_alerts": 8, "risk": "HIGH"},
-        {"region": "Maharashtra", "accounts_count": 2984, "transactions_count": 28401, "fraud_count": 51, "volume": 3450000.0, "active_alerts": 12, "risk": "CRITICAL"},
-        {"region": "Karnataka", "accounts_count": 2105, "transactions_count": 21840, "fraud_count": 24, "volume": 2100000.0, "active_alerts": 4, "risk": "MEDIUM"},
-        {"region": "Delhi", "accounts_count": 1948, "transactions_count": 19280, "fraud_count": 18, "volume": 1850000.0, "active_alerts": 2, "risk": "MEDIUM"},
-        {"region": "Tamil Nadu", "accounts_count": 1542, "transactions_count": 14920, "fraud_count": 12, "volume": 1150000.0, "active_alerts": 1, "risk": "LOW"},
-    ]
-
-    # 5. Payment Methods Statistics
-    payment_methods_db = {
-        "distribution": {"UPI": 62, "Debit Card": 24, "Credit Card": 9, "Net Banking": 5, "PayPal": 0},
-        "risk_levels": {"UPI": 84, "Debit Card": 45, "Credit Card": 30, "Net Banking": 52, "PayPal": 10}
-    }
-
-generate_mock_data()
 
 # ---------------------------------------------------------
 # BACKEND API ROUTING
@@ -400,39 +128,71 @@ def health():
         "version": "1.0.0"
     }
 
-@app.get("/dashboard")
-def get_dashboard():
-    # Calculate stats
-    total_accounts = len(accounts_db)
-    # Total transaction amount
-    total_tx_amount = sum(tx["amount"] for tx in transactions_db)
+def enrich_account(acc: dict) -> dict:
+    if not acc:
+        return acc
+    score = acc.get("risk_score", 0)
+    if score >= 90:
+        acc["status"] = "Under Investigation"
+    elif score >= 75:
+        acc["status"] = "Open Alert"
+    elif score >= 40:
+        acc["status"] = "Monitored"
+    else:
+        acc["status"] = "Active"
+    return acc
+
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: List[WebSocket] = []
+        
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+        
+    def disconnect(self, websocket: WebSocket):
+        self.active_connections.remove(websocket)
+        
+    async def broadcast(self, message: dict):
+        for connection in self.active_connections:
+            try:
+                await connection.send_json(message)
+            except Exception:
+                pass
+
+manager = ConnectionManager()
+
+def get_dashboard_data():
+    all_accounts = [enrich_account(a) for a in fetch_accounts()]
+    all_transactions = fetch_transactions()
+    all_alerts = fetch_alerts()
+    for al in all_alerts:
+        acc = next((a for a in all_accounts if a["account_id"] == al["account_id"]), None)
+        al["holder_name"] = acc["holder_name"] if acc else "Unknown"
+        
+    total_accounts = len(all_accounts)
+    total_tx_amount = sum(tx.get("amount", 0.0) for tx in all_transactions)
     
-    # Credit/debit totals
-    total_credit = sum(acc["credit_amount"] for acc in accounts_db.values())
-    total_debit = sum(acc["debit_amount"] for acc in accounts_db.values())
+    total_credit = sum(acc.get("credit_amount", 0.0) for acc in all_accounts)
+    total_debit = sum(acc.get("debit_amount", 0.0) for acc in all_accounts)
     
-    # Count of flagged/fraud tx
-    fraud_transactions = sum(1 for tx in transactions_db if tx["status"] == "FLAGGED")
-    active_alerts = len(alerts_db)
+    fraud_transactions = sum(1 for tx in all_transactions if tx.get("status") == "FLAGGED")
+    active_alerts = len(all_alerts)
+    recent_alerts = all_alerts[:5]
     
-    # Recent high risk alerts
-    recent_alerts = alerts_db[:5]
-    
-    # Recent suspicious accounts
     suspicious_accounts = [
         {
             "account_id": acc["account_id"],
             "holder_name": acc["holder_name"],
             "account_number": acc["account_number"],
             "risk_score": acc["risk_score"],
-            "amount": acc["credit_amount"],
+            "amount": acc.get("credit_amount", 0.0),
             "region": acc["region"],
-            "status": acc["status"]
+            "status": acc.get("status", "Open")
         }
-        for acc in list(accounts_db.values()) if acc["risk_score"] >= 80
+        for acc in all_accounts if acc.get("risk_score", 0) >= 80
     ][:6]
     
-    # Chart data (24h, 7d, 30d, 6m counts)
     chart_data = {
         "labels": ["Mar", "Apr", "May", "Jun", "Jul", "Aug"],
         "total": [450, 520, 610, 580, 710, 840],
@@ -440,6 +200,13 @@ def get_dashboard():
         "debit": [230, 250, 300, 290, 350, 410],
         "fraud": [2, 3, 5, 6, 9, 14]
     }
+    
+    if all_transactions:
+        chart_data["total"][-1] = len(all_transactions)
+        chart_data["fraud"][-1] = fraud_transactions
+        
+    regional_risk = get_regional_risk()
+    payment_methods = get_payment_methods()
     
     return {
         "total_accounts": total_accounts,
@@ -450,8 +217,44 @@ def get_dashboard():
         "active_alerts": active_alerts,
         "recent_alerts": recent_alerts,
         "suspicious_accounts": suspicious_accounts,
-        "chart_data": chart_data
+        "chart_data": chart_data,
+        "regional_risk": regional_risk,
+        "payment_methods": payment_methods
     }
+
+import asyncio
+
+async def broadcast_updates():
+    try:
+        await manager.broadcast(get_dashboard_data())
+    except Exception as e:
+        print(f"Error broadcasting updates: {e}")
+
+def trigger_broadcast():
+    try:
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(broadcast_updates())
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(broadcast_updates())
+    except Exception as e:
+        print(f"Failed to trigger broadcast: {e}")
+
+@app.get("/dashboard")
+def get_dashboard():
+    return get_dashboard_data()
+
+@app.websocket("/ws/analytics")
+async def websocket_endpoint(websocket: WebSocket):
+    await manager.connect(websocket)
+    try:
+        await websocket.send_json(get_dashboard_data())
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
 
 @app.get("/accounts")
 def get_accounts(
@@ -461,36 +264,16 @@ def get_accounts(
     limit: int = 50,
     offset: int = 0
 ):
-    filtered = list(accounts_db.values())
-    
-    if search:
-        s_lower = search.lower()
-        filtered = [
-            a for a in filtered 
-            if s_lower in a["account_id"].lower() 
-            or s_lower in a["holder_name"].lower() 
-            or s_lower in a["account_number"].lower()
-            or s_lower in a["ifsc_code"].lower()
-        ]
-        
-    if risk_level and risk_level != "All":
-        filtered = [a for a in filtered if a["risk_level"].lower() == risk_level.lower()]
-        
-    if region and region != "All":
-        filtered = [a for a in filtered if a["region"].lower() == region.lower()]
-        
-    # Sort by risk score descending
-    filtered.sort(key=lambda x: x["risk_score"], reverse=True)
-    
+    filtered = [enrich_account(a) for a in fetch_accounts(search=search or "", risk_level=risk_level or "All", region=region or "All")]
     total = len(filtered)
     paginated = filtered[offset : offset + limit]
-    
     return {"total": total, "accounts": paginated}
 
 @app.get("/accounts/{account_id}")
 def get_account_detail(account_id: str):
-    if account_id in accounts_db:
-        return accounts_db[account_id]
+    acc = enrich_account(fetch_account_detail(account_id))
+    if acc:
+        return acc
     raise HTTPException(status_code=404, detail="Account not found")
 
 @app.get("/transactions")
@@ -502,51 +285,37 @@ def get_transactions(
     limit: int = 50,
     offset: int = 0
 ):
-    filtered = transactions_db
-    
-    if account_id:
-        filtered = [t for t in filtered if t["sender_id"] == account_id or t["receiver_id"] == account_id]
-        
-    if search:
-        s_lower = search.lower()
-        filtered = [
-            t for t in filtered 
-            if s_lower in t["transaction_id"].lower() 
-            or s_lower in t["sender_name"].lower() 
-            or s_lower in t["receiver_name"].lower()
-            or s_lower in t["sender_id"].lower()
-            or s_lower in t["receiver_id"].lower()
-        ]
-        
-    if risk_level and risk_level != "All":
-        filtered = [t for t in filtered if t["risk_level"].lower() == risk_level.lower()]
-        
-    if payment_method and payment_method != "All":
-        filtered = [t for t in filtered if t["payment_method"].lower() == payment_method.lower()]
-        
+    filtered = fetch_transactions(
+        account_id=account_id,
+        search=search or "",
+        risk_level=risk_level or "All",
+        payment_method=payment_method or "All"
+    )
     total = len(filtered)
     paginated = filtered[offset : offset + limit]
-    
     return {"total": total, "transactions": paginated}
 
 @app.get("/alerts")
 def get_alerts():
-    return alerts_db
+    alerts = fetch_alerts()
+    for al in alerts:
+        acc = fetch_account_detail(al["account_id"])
+        al["holder_name"] = acc["holder_name"] if acc else "Unknown"
+    return alerts
 
 @app.get("/network/{account_id}")
 def get_network(account_id: str):
-    # Construct a localized network for visualization
-    # We will build nodes and edges from the transactions involving this account
     nodes = []
     edges = []
     
-    # Primary node
-    primary = accounts_db.get(account_id, {
-        "account_id": account_id,
-        "holder_name": "Unknown",
-        "risk_score": 50,
-        "risk_level": "Medium"
-    })
+    primary = fetch_account_detail(account_id)
+    if not primary:
+        primary = {
+            "account_id": account_id,
+            "holder_name": "Unknown",
+            "risk_score": 50,
+            "risk_level": "Medium"
+        }
     
     nodes.append({
         "id": primary["account_id"],
@@ -556,19 +325,20 @@ def get_network(account_id: str):
         "is_primary": True
     })
     
-    # Associated tx
-    assoc_txs = [t for t in transactions_db if t["sender_id"] == account_id or t["receiver_id"] == account_id][:15]
+    all_transactions = fetch_transactions()
+    assoc_txs = [t for t in all_transactions if t["sender_id"] == account_id or t["receiver_id"] == account_id][:15]
     
     added_nodes = {account_id}
     
     for tx in assoc_txs:
-        # Sender node
         if tx["sender_id"] not in added_nodes:
-            s_acc = accounts_db.get(tx["sender_id"], {
-                "holder_name": tx["sender_name"],
-                "risk_score": tx["risk_score"] - 10,
-                "risk_level": "Medium"
-            })
+            s_acc = fetch_account_detail(tx["sender_id"])
+            if not s_acc:
+                s_acc = {
+                    "holder_name": tx["sender_name"],
+                    "risk_score": tx.get("risk_score", 50) - 10,
+                    "risk_level": "Medium"
+                }
             nodes.append({
                 "id": tx["sender_id"],
                 "label": f"{tx['sender_name']}\n({tx['sender_id']})",
@@ -578,13 +348,14 @@ def get_network(account_id: str):
             })
             added_nodes.add(tx["sender_id"])
             
-        # Receiver node
         if tx["receiver_id"] not in added_nodes:
-            r_acc = accounts_db.get(tx["receiver_id"], {
-                "holder_name": tx["receiver_name"],
-                "risk_score": tx["risk_score"] - 10,
-                "risk_level": "Medium"
-            })
+            r_acc = fetch_account_detail(tx["receiver_id"])
+            if not r_acc:
+                r_acc = {
+                    "holder_name": tx["receiver_name"],
+                    "risk_score": tx.get("risk_score", 50) - 10,
+                    "risk_level": "Medium"
+                }
             nodes.append({
                 "id": tx["receiver_id"],
                 "label": f"{tx['receiver_name']}\n({tx['receiver_id']})",
@@ -602,12 +373,10 @@ def get_network(account_id: str):
             "tx_id": tx["transaction_id"]
         })
         
-    # Generate some network stats
-    unique_senders = len(set(t["sender_id"] for t in transactions_db if t["receiver_id"] == account_id))
-    unique_receivers = len(set(t["receiver_id"] for t in transactions_db if t["sender_id"] == account_id))
+    unique_senders = len(set(t["sender_id"] for t in all_transactions if t["receiver_id"] == account_id))
+    unique_receivers = len(set(t["receiver_id"] for t in all_transactions if t["sender_id"] == account_id))
     total_connections = unique_senders + unique_receivers
     
-    # Specific mock calculations for ACC-10293 to match specification exactly
     if account_id == "ACC-10293":
         unique_senders = 17
         unique_receivers = 8
@@ -617,8 +386,8 @@ def get_network(account_id: str):
         network_risk = 96
     else:
         rapid_transfers = random.randint(1, 10)
-        high_risk_counterparties = random.randint(0, 5)
-        network_risk = random.randint(20, 85)
+        high_risk_counterparties = sum(1 for n in nodes if n["risk_score"] >= 75 and not n["is_primary"])
+        network_risk = max(5, min(99, int(primary["risk_score"] * 1.1 + random.randint(-5, 5))))
         
     return {
         "nodes": nodes,
@@ -635,11 +404,11 @@ def get_network(account_id: str):
 
 @app.get("/risk/{account_id}")
 def get_risk_profile(account_id: str):
-    acc = accounts_db.get(account_id)
+    acc = fetch_account_detail(account_id)
     if not acc:
         raise HTTPException(status_code=404, detail="Account not found")
         
-    account_txs = [t for t in transactions_db if t["sender_id"] == account_id or t["receiver_id"] == account_id]
+    account_txs = fetch_transactions(account_id)
     
     if not account_txs:
         base = acc["risk_score"]
@@ -651,16 +420,22 @@ def get_risk_profile(account_id: str):
             lgb_m, if_m = get_models()
             
             processed_latest = preprocess_raw_transactions([latest_tx])[0]
-            processed_history = preprocess_raw_transactions(transactions_db)
+            all_transactions = fetch_transactions()
+            processed_history = preprocess_raw_transactions(all_transactions)
             
             X_lgb, X_if = pipe.build_features(processed_latest, processed_history)
             
+            # 1. Predict risk probability
             if hasattr(lgb_m, "predict_proba"):
                 p = lgb_m.predict_proba(X_lgb.values)[:, 1][0]
             else:
                 p = lgb_m.predict(X_lgb.values)[0]
                 
             base = int(round(p * 100))
+            
+            # 2. Predict anomaly score
+            decision_score = if_m.decision_function(X_if.values)[0]
+            anomaly_score = -decision_score
             
             # Map risk level
             if base >= 90:
@@ -672,8 +447,23 @@ def get_risk_profile(account_id: str):
             else:
                 risk_level = "Low/Safe"
                 
-            acc["risk_score"] = base
-            acc["risk_level"] = risk_level
+            # 3. Store prediction in risk_predictions table
+            pred_record = {
+                "account_id": account_id,
+                "transaction_id": latest_tx.get("transaction_id"),
+                "prediction": float(p),
+                "risk_score": base,
+                "risk_level": risk_level,
+                "anomaly_score": float(anomaly_score),
+                "model_version": "LGB-4.5.0 / IF-1.6.1"
+            }
+            insert_risk_prediction(pred_record)
+            
+            # 4. Update accounts table
+            update_account_score(account_id, base, risk_level)
+            
+            # 5. Broadcast real-time updates
+            trigger_broadcast()
         except Exception as e:
             print(f"Prediction error: {e}")
             base = acc["risk_score"]
@@ -704,11 +494,11 @@ def get_risk_profile(account_id: str):
 
 @app.get("/explanation/{account_id}")
 def get_explanation(account_id: str):
-    acc = accounts_db.get(account_id)
+    acc = fetch_account_detail(account_id)
     if not acc:
         raise HTTPException(status_code=404, detail="Account not found")
         
-    account_txs = [t for t in transactions_db if t["sender_id"] == account_id or t["receiver_id"] == account_id]
+    account_txs = fetch_transactions(account_id)
     
     if not account_txs:
         prob = float(acc["risk_score"])
@@ -727,7 +517,8 @@ def get_explanation(account_id: str):
             lgb_m, if_m = get_models()
             
             processed_latest = preprocess_raw_transactions([latest_tx])[0]
-            processed_history = preprocess_raw_transactions(transactions_db)
+            all_transactions = fetch_transactions()
+            processed_history = preprocess_raw_transactions(all_transactions)
             
             X_lgb, X_if = pipe.build_features(processed_latest, processed_history)
             
@@ -860,7 +651,7 @@ def predict_transaction(tx: TransactionInput):
         tx_dict["amount_paid"] = tx.amount
         
         processed_tx = preprocess_raw_transactions([tx_dict])[0]
-        processed_history = preprocess_raw_transactions(transactions_db)
+        processed_history = preprocess_raw_transactions(fetch_transactions())
         
         X_lgb, X_if = pipe.build_features(processed_tx, processed_history)
         
@@ -876,6 +667,7 @@ def predict_transaction(tx: TransactionInput):
         shap_raw = np.asarray(shap_raw)
         shap_values = shap_raw[0, :-1].tolist()
         
+        trigger_broadcast()
         return {
             "transaction_id": tx.transaction_id,
             "risk_probability": float(p),
@@ -921,11 +713,62 @@ def get_analytics_monthly():
 
 @app.get("/regional-risk")
 def get_regional_risk():
-    return regional_db
+    all_txs = fetch_transactions()
+    all_accs = fetch_accounts()
+    all_alerts = fetch_alerts()
+    
+    regions_list = ["Madhya Pradesh", "Maharashtra", "Karnataka", "Delhi", "Tamil Nadu"]
+    res = []
+    for reg in regions_list:
+        accs_in_reg = [a for a in all_accs if a.get("region") == reg]
+        txs_in_reg = [t for t in all_txs if t.get("region") == reg]
+        alerts_in_reg = [al for al in all_alerts if any(a.get("account_id") == al.get("account_id") for a in accs_in_reg)]
+        
+        vol = sum(t.get("amount", 0.0) for t in txs_in_reg)
+        fraud_cnt = sum(1 for t in txs_in_reg if t.get("status") == "FLAGGED")
+        
+        max_risk = max([a.get("risk_score", 0) for a in accs_in_reg]) if accs_in_reg else 0
+        if max_risk >= 90:
+            risk = "CRITICAL"
+        elif max_risk >= 75:
+            risk = "HIGH"
+        elif max_risk >= 40:
+            risk = "MEDIUM"
+        else:
+            risk = "LOW"
+            
+        res.append({
+            "region": reg,
+            "accounts_count": len(accs_in_reg),
+            "transactions_count": len(txs_in_reg),
+            "fraud_count": fraud_cnt,
+            "volume": vol,
+            "active_alerts": len(alerts_in_reg),
+            "risk": risk
+        })
+    return res
 
 @app.get("/payment-methods")
 def get_payment_methods():
-    return payment_methods_db
+    all_txs = fetch_transactions()
+    methods = ["UPI", "Debit Card", "Credit Card", "Net Banking", "PayPal"]
+    total_txs = len(all_txs) if all_txs else 1
+    
+    dist = {}
+    risk = {}
+    for m in methods:
+        txs_with_method = [t for t in all_txs if t.get("payment_method") == m]
+        dist[m] = int(round((len(txs_with_method) / total_txs) * 100))
+        
+        if txs_with_method:
+            risk[m] = int(round(sum(t.get("risk_score", 0) for t in txs_with_method) / len(txs_with_method)))
+        else:
+            risk[m] = 0
+            
+    return {
+        "distribution": dist,
+        "risk_levels": risk
+    }
 
 class ReportRequest(BaseModel):
     account_id: str
@@ -933,7 +776,7 @@ class ReportRequest(BaseModel):
 @app.post("/investigation-report")
 def post_investigation_report(req: ReportRequest):
     account_id = req.account_id
-    acc = accounts_db.get(account_id)
+    acc = fetch_account_detail(account_id)
     if not acc:
         raise HTTPException(status_code=404, detail="Account not found")
         
@@ -1065,7 +908,7 @@ def post_investigation_report(req: ReportRequest):
     story.append(Paragraph("6. Flagged High-Risk Transactions (Recent Sample)", section_style))
     tx_list = [[Paragraph("Transaction ID", bold_body_style), Paragraph("Counterparty", bold_body_style), Paragraph("Amount", bold_body_style), Paragraph("Method", bold_body_style), Paragraph("Status", bold_body_style)]]
     
-    assoc_txs = [t for t in transactions_db if t["sender_id"] == account_id or t["receiver_id"] == account_id][:5]
+    assoc_txs = fetch_transactions(account_id)[:5]
     for tx in assoc_txs:
         counterparty = tx["receiver_name"] if tx["sender_id"] == account_id else tx["sender_name"]
         tx_list.append([
