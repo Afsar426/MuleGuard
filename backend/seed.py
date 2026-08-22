@@ -167,8 +167,8 @@ def generate_and_seed_data(client: Client):
         "age_months": 24,
         "risk_score": 94,
         "risk_level": "Critical",
-        "credit_amount": 1425000.00,
-        "debit_amount": 1390000.00,
+        "credit_amount": 142500.00,
+        "debit_amount": 139000.00,
         "payment_methods": ["UPI", "Net Banking", "Debit Card"]
     })
     
@@ -182,8 +182,8 @@ def generate_and_seed_data(client: Client):
         "age_months": 36,
         "risk_score": 75,
         "risk_level": "High",
-        "credit_amount": 920000.00,
-        "debit_amount": 890000.00,
+        "credit_amount": 92000.00,
+        "debit_amount": 89000.00,
         "payment_methods": ["UPI", "Net Banking"]
     })
     
@@ -210,8 +210,8 @@ def generate_and_seed_data(client: Client):
             "age_months": random.randint(1, 120),
             "risk_score": r_score,
             "risk_level": r_lvl,
-            "credit_amount": round(random.uniform(5000, 5000000), 2),
-            "debit_amount": round(random.uniform(5000, 5000000), 2),
+            "credit_amount": round(random.uniform(500, 50000), 2),
+            "debit_amount": round(random.uniform(500, 50000), 2),
             "payment_methods": random.sample(payment_methods, k=random.randint(1, 3))
         })
         
@@ -235,7 +235,6 @@ def generate_and_seed_data(client: Client):
         "status": "Open"
     })
     
-    # 8 other random alerts
     high_risk_accs = [a for a in accounts if a["risk_score"] >= 70 and a["account_id"] != target_id]
     for idx, acc in enumerate(high_risk_accs[:8]):
         alerts.append({
@@ -244,7 +243,7 @@ def generate_and_seed_data(client: Client):
             "alert_type": random.choice(alert_types),
             "risk_score": acc["risk_score"],
             "risk_level": acc["risk_level"],
-            "amount": round(random.uniform(10000, 500000), 2),
+            "amount": round(random.uniform(1000, 50000), 2),
             "detected_time": (datetime.now() - timedelta(minutes=random.randint(10, 1440))).strftime("%Y-%m-%d %H:%M:%S"),
             "status": "Open"
         })
@@ -264,7 +263,7 @@ def generate_and_seed_data(client: Client):
         "sender_name": "Rohan Deshmukh",
         "receiver_id": target_id,
         "receiver_name": "Aarav Sharma",
-        "amount": 85000.0,
+        "amount": 8500.0,
         "transaction_type": "Credit",
         "payment_method": "UPI",
         "region": "Madhya Pradesh",
@@ -299,7 +298,7 @@ def generate_and_seed_data(client: Client):
             
         sender = acc_map[s_id]
         receiver = acc_map[r_id]
-        amt = round(random.uniform(500, 150000), 2)
+        amt = round(random.uniform(50, 15000), 2)
         tx_type = random.choice(["Credit", "Debit"])
         method = random.choice(sender["payment_methods"])
         

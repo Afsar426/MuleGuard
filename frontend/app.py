@@ -21,6 +21,17 @@ from matplotlib.figure import Figure
 from matplotlib.patches import Circle
 import networkx as nx
 
+def format_money(val_in_inr):
+    # Format value dynamically in Lakhs (L) or Crores (Cr)
+    if val_in_inr >= 10000000:
+        return f"₹{val_in_inr / 10000000:.2f} Cr"
+    elif val_in_inr >= 100000:
+        return f"₹{val_in_inr / 100000:.2f} L"
+    elif val_in_inr >= 1000:
+        return f"₹{val_in_inr / 1000:.1f} K"
+    else:
+        return f"₹{val_in_inr:,.2f}"
+
 # ---------------------------------------------------------
 # CONSTANTS & DESIGN SYSTEM (SECTIONS 1, 2 & BEHANCE COLOR COMBO)
 # ---------------------------------------------------------
@@ -1978,9 +1989,9 @@ class DashboardView(QWidget):
         data = self.api.get_dashboard()
         
         self.card_widgets["Total Accounts"].setText(f"{data.get('total_accounts', 12450):,}")
-        self.card_widgets["Total Transaction Amount"].setText(f"₹{data.get('total_tx_amount', 84.6*10000000)/10000000:.1f} Cr")
-        self.card_widgets["Total Credit"].setText(f"₹{data.get('total_credit', 42.8*10000000)/10000000:.1f} Cr")
-        self.card_widgets["Total Debit"].setText(f"₹{data.get('total_debit', 41.8*10000000)/10000000:.1f} Cr")
+        self.card_widgets["Total Transaction Amount"].setText(format_money(data.get('total_tx_amount', 84.6*10000000)))
+        self.card_widgets["Total Credit"].setText(format_money(data.get('total_credit', 42.8*10000000)))
+        self.card_widgets["Total Debit"].setText(format_money(data.get('total_debit', 41.8*10000000)))
         self.card_widgets["Fraud Transactions"].setText(str(data.get('fraud_transactions', 137)))
         self.card_widgets["Active Alerts"].setText(str(data.get('active_alerts', 24)))
         
@@ -2021,9 +2032,9 @@ class DashboardView(QWidget):
             
     def update_with_stream_data(self, data):
         self.card_widgets["Total Accounts"].setText(f"{data.get('total_accounts', 12450):,}")
-        self.card_widgets["Total Transaction Amount"].setText(f"₹{data.get('total_tx_amount', 84.6*10000000)/10000000:.1f} Cr")
-        self.card_widgets["Total Credit"].setText(f"₹{data.get('total_credit', 42.8*10000000)/10000000:.1f} Cr")
-        self.card_widgets["Total Debit"].setText(f"₹{data.get('total_debit', 41.8*10000000)/10000000:.1f} Cr")
+        self.card_widgets["Total Transaction Amount"].setText(format_money(data.get('total_tx_amount', 84.6*10000000)))
+        self.card_widgets["Total Credit"].setText(format_money(data.get('total_credit', 42.8*10000000)))
+        self.card_widgets["Total Debit"].setText(format_money(data.get('total_debit', 41.8*10000000)))
         self.card_widgets["Fraud Transactions"].setText(str(data.get('fraud_transactions', 137)))
         self.card_widgets["Active Alerts"].setText(str(data.get('active_alerts', 24)))
         
@@ -4273,35 +4284,35 @@ class PaymentMethodsView(QWidget):
             # Map UPI
             upi_det = details.get("UPI", {})
             self.sim_upi_txs = upi_det.get("count", 0)
-            self.sim_upi_amt = upi_det.get("volume", 0.0) / 10000000.0  # Convert to Crores
+            self.sim_upi_amt = upi_det.get("volume", 0.0)
             self.sim_upi_avg = upi_det.get("avg_amount", 0.0)
             self.sim_upi_risk = risks.get("UPI", 0)
             
             # Map Debit Card
             dc_det = details.get("Debit Card", {})
             self.sim_debit_txs = dc_det.get("count", 0)
-            self.sim_debit_amt = dc_det.get("volume", 0.0) / 10000000.0
+            self.sim_debit_amt = dc_det.get("volume", 0.0)
             self.sim_debit_avg = dc_det.get("avg_amount", 0.0)
             self.sim_debit_risk = risks.get("Debit Card", 0)
             
             # Map Credit Card
             cc_det = details.get("Credit Card", {})
             self.sim_credit_txs = cc_det.get("count", 0)
-            self.sim_credit_amt = cc_det.get("volume", 0.0) / 10000000.0
+            self.sim_credit_amt = cc_det.get("volume", 0.0)
             self.sim_credit_avg = cc_det.get("avg_amount", 0.0)
             self.sim_credit_risk = risks.get("Credit Card", 0)
             
             # Map Net Banking
             nb_det = details.get("Net Banking", {})
             self.sim_net_txs = nb_det.get("count", 0)
-            self.sim_net_amt = nb_det.get("volume", 0.0) / 10000000.0
+            self.sim_net_amt = nb_det.get("volume", 0.0)
             self.sim_net_avg = nb_det.get("avg_amount", 0.0)
             self.sim_net_risk = risks.get("Net Banking", 0)
             
             # Map PayPal
             pp_det = details.get("PayPal", {})
             self.sim_paypal_txs = pp_det.get("count", 0)
-            self.sim_paypal_amt = pp_det.get("volume", 0.0) / 10000000.0
+            self.sim_paypal_amt = pp_det.get("volume", 0.0)
             self.sim_paypal_avg = pp_det.get("avg_amount", 0.0)
             self.sim_paypal_risk = risks.get("PayPal", 0)
             
@@ -4318,7 +4329,7 @@ class PaymentMethodsView(QWidget):
         risk_list = [self.sim_upi_risk, self.sim_debit_risk, self.sim_credit_risk, self.sim_net_risk, self.sim_paypal_risk, self.sim_other_risk]
         
         total_txs = sum(tx_list)
-        total_amt = sum(amt_list) # In Crores
+        total_amt = sum(amt_list) # In INR!
         
         # Calculate weighted average transaction ticket
         avg_tx_amt = sum(avg_list) / len(avg_list) if avg_list else 0
@@ -4335,7 +4346,7 @@ class PaymentMethodsView(QWidget):
         highest_risk_score = risk_list[max_risk_idx]
         
         self.kpi_value_labels["Total Transactions"].setText(f"{total_txs:,}")
-        self.kpi_value_labels["Total Amount"].setText(f"₹{total_amt:.1f} Cr")
+        self.kpi_value_labels["Total Amount"].setText(format_money(total_amt))
         self.kpi_value_labels["Avg. Transaction Amount"].setText(f"₹{int(avg_tx_amt):,}")
         self.kpi_value_labels["Highest Share"].setText(highest_share_name)
         self.kpi_subtext_labels["Highest Share"].setText(f"{highest_share_pct:.1f}% of total")
@@ -4361,7 +4372,7 @@ class PaymentMethodsView(QWidget):
         ax_d.axis('equal')
         self.donut_canvas.draw()
         
-        # 2. Redraw Horizontal Bar Chart 1 (Amount Volume in Crores)
+        # 2. Redraw Horizontal Bar Chart 1 (Amount Volume in Crores/Lakhs)
         self.bar1_canvas.clear()
         ax_b1 = self.bar1_canvas.ax
         y_pos = range(len(names))
@@ -4373,15 +4384,34 @@ class PaymentMethodsView(QWidget):
         r_amt_list = list(reversed(amt_list))
         r_colors = list(reversed(colors_d))
         
-        bars1 = ax_b1.barh(y_pos, r_amt_list, color=r_colors, height=0.45, zorder=3)
+        max_val = max(amt_list) if amt_list else 0
+        if max_val >= 10000000:
+            divisor = 10000000.0
+            unit_suffix = "Cr"
+        elif max_val >= 100000:
+            divisor = 100000.0
+            unit_suffix = "L"
+        elif max_val >= 1000:
+            divisor = 1000.0
+            unit_suffix = "K"
+        else:
+            divisor = 1.0
+            unit_suffix = ""
+            
+        scaled_r_amt_list = [x / divisor for x in r_amt_list]
+        
+        bars1 = ax_b1.barh(y_pos, scaled_r_amt_list, color=r_colors, height=0.45, zorder=3)
         ax_b1.set_yticks(y_pos)
         ax_b1.set_yticklabels(r_names, fontsize=8, color="#667085")
         
         for bar in bars1:
             width = bar.get_width()
-            ax_b1.text(width + 1.0, bar.get_y() + bar.get_height()/2, f"₹{width:.1f} Cr", ha='left', va='center', fontsize=7, color="#172B4D", weight='bold')
+            ax_b1.text(width + (max(scaled_r_amt_list)*0.02 if scaled_r_amt_list else 1.0), 
+                       bar.get_y() + bar.get_height()/2, 
+                       f"₹{width:.2f} {unit_suffix}" if unit_suffix else f"₹{width:,.0f}", 
+                       ha='left', va='center', fontsize=7, color="#172B4D", weight='bold')
             
-        ax_b1.set_xlim(0, max(amt_list) * 1.25 if amt_list else 60)
+        ax_b1.set_xlim(0, max(scaled_r_amt_list) * 1.25 if scaled_r_amt_list else 10.0)
         self.bar1_canvas.format_ax("")
         ax_b1.grid(True, linestyle='--', alpha=0.3, color=COLOR_BORDER)
         self.bar1_canvas.draw()
