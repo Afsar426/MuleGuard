@@ -16,12 +16,12 @@ The following architecture diagram represents the lifecycle of a transaction wit
 
 ```mermaid
 flowchart TD
-    subgraph Client [Desktop UI Client (PySide6)]
+    subgraph Client ["Desktop UI Client (PySide6)"]
         UI[Investigation Console / Tabs]
         WS_Client[WebSocket Thread]
     end
 
-    subgraph Backend [FastAPI Application Server]
+    subgraph Backend ["FastAPI Application Server"]
         API[REST Endpoints]
         Pipe[Feature Pipeline]
         LGB[LightGBM Classifier]
@@ -30,7 +30,7 @@ flowchart TD
         WS_Mgr[WebSocket Connection Manager]
     end
 
-    subgraph DB [Live Cloud Database]
+    subgraph DB ["Live Cloud Database"]
         Supa[(Supabase Tables)]
     end
 
