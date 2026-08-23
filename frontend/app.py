@@ -298,8 +298,20 @@ class AnalyticsWebSocketThread(QThread):
 # SANDBOX RESILIENT API CLIENT (FORCED LOCAL BY DEFAULT)
 # ---------------------------------------------------------
 class ApiClient:
-    def __init__(self, base_url="http://127.0.0.1:8000"):
-        self.base_url = base_url
+    def __init__(self, base_url=None):
+        if base_url is None:
+            base_url = os.getenv("MULEGUARD_API_URL")
+        if base_url is None:
+            try:
+                if os.path.exists("config.json"):
+                    with open("config.json", "r") as f:
+                        cfg = json.load(f)
+                        base_url = cfg.get("api_url")
+            except Exception:
+                pass
+        if base_url is None:
+            base_url = "http://127.0.0.1:8000"
+        self.base_url = base_url.rstrip("/")
         self.is_connected = False
         self.local_mode = True # Default local sandbox
         self.cached_dashboard = None
@@ -4358,7 +4370,7 @@ class PaymentMethodsView(QWidget):
         ax_d = self.donut_canvas.ax
         colors_d = ["#155EEF", "#32D583", "#F79009", "#F04438", "#9B51E0", "#E4E7EC"]
         
-        self.donut_canvas.fig.subplots_adjust(left=0.05, right=0.55, top=0.9, bottom=0.1)
+        self.donut_canvas.fig.subplots_adjust(left=0.02, right=0.42, top=0.9, bottom=0.1)
         
         safe_tx_list = tx_list if sum(tx_list) > 0 else [1, 0, 0, 0, 0, 0]
         wedges, texts = ax_d.pie(
@@ -4368,7 +4380,7 @@ class PaymentMethodsView(QWidget):
         ax_d.text(0, 0, f"{total_txs:,}\nTotal Tx", ha='center', va='center', fontsize=9, weight='bold', color="#172B4D")
         
         legend_labels = [f"{names[i]}  {tx_list[i]/total_txs*100 if total_txs else 0:.1f}% ({tx_list[i]:,})" for i in range(len(names))]
-        ax_d.legend(wedges, legend_labels, loc="center left", bbox_to_anchor=(1.05, 0.5), frameon=False, fontsize=7)
+        ax_d.legend(wedges, legend_labels, loc="center left", bbox_to_anchor=(1.02, 0.5), frameon=False, fontsize=7)
         ax_d.axis('equal')
         self.donut_canvas.draw()
         
@@ -4377,7 +4389,7 @@ class PaymentMethodsView(QWidget):
         ax_b1 = self.bar1_canvas.ax
         y_pos = range(len(names))
         
-        self.bar1_canvas.fig.subplots_adjust(left=0.22, right=0.82, top=0.9, bottom=0.15)
+        self.bar1_canvas.fig.subplots_adjust(left=0.28, right=0.80, top=0.9, bottom=0.15)
         
         # reverse the lists so highest is plotted at top
         r_names = list(reversed(names))
@@ -4421,7 +4433,7 @@ class PaymentMethodsView(QWidget):
         ax_b2 = self.bar2_canvas.ax
         r_avg_list = list(reversed(avg_list))
         
-        self.bar2_canvas.fig.subplots_adjust(left=0.22, right=0.82, top=0.9, bottom=0.15)
+        self.bar2_canvas.fig.subplots_adjust(left=0.28, right=0.80, top=0.9, bottom=0.15)
         
         bars2 = ax_b2.barh(y_pos, r_avg_list, color="#6941C6", height=0.45, zorder=3)
         ax_b2.set_yticks(y_pos)
