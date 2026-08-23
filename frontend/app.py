@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
     QDialog, QMessageBox, QCheckBox, QFrame, QScrollArea, QSplitter, QFormLayout, QProgressBar
 )
 from PySide6.QtCore import Qt, QTimer, QSize, Signal, Slot, QThread
-from PySide6.QtGui import QFont, QColor, QPainter, QBrush, QPen, QPainterPath, QPixmap
+from PySide6.QtGui import QFont, QColor, QPainter, QBrush, QPen, QPainterPath, QPixmap, QIcon
 
 # Matplotlib & NetworkX Imports
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
@@ -1075,7 +1075,7 @@ class LoginView(QWidget):
         title_row.setAlignment(Qt.AlignVCenter)
         
         self.logo_label = QLabel()
-        logo_path = os.path.join(os.path.dirname(__file__), "logo.jpg")
+        logo_path = os.path.join(os.path.dirname(__file__), "logo.png")
         pixmap = QPixmap(logo_path)
         if not pixmap.isNull():
             scaled_pixmap = pixmap.scaled(QSize(44, 44), Qt.KeepAspectRatio, Qt.SmoothTransformation)
@@ -1211,7 +1211,7 @@ class LoginView(QWidget):
         header_v.setSpacing(8)
         
         form_logo = QLabel()
-        logo_path = os.path.join(os.path.dirname(__file__), "logo.jpg")
+        logo_path = os.path.join(os.path.dirname(__file__), "logo.png")
         pixmap = QPixmap(logo_path)
         if not pixmap.isNull():
             scaled_pixmap = pixmap.scaled(QSize(36, 36), Qt.KeepAspectRatio, Qt.SmoothTransformation)
@@ -1452,6 +1452,8 @@ class MainWindow(QMainWindow):
         self.current_user = "Analyst"
         
         self.setWindowTitle("MuleGuard")
+        logo_path = os.path.join(os.path.dirname(__file__), "logo.png")
+        self.setWindowIcon(QIcon(logo_path))
         self.setMinimumSize(1280, 720)
         self.resize(1440, 900)
         
@@ -1508,7 +1510,7 @@ class MainWindow(QMainWindow):
         h_layout.setAlignment(Qt.AlignVCenter)
         
         logo_label = QLabel()
-        logo_path = os.path.join(os.path.dirname(__file__), "logo.jpg")
+        logo_path = os.path.join(os.path.dirname(__file__), "logo.png")
         pixmap = QPixmap(logo_path)
         if not pixmap.isNull():
             scaled_pixmap = pixmap.scaled(QSize(36, 36), Qt.KeepAspectRatio, Qt.SmoothTransformation)
@@ -1643,7 +1645,24 @@ class MainWindow(QMainWindow):
         
         left_layout.addWidget(self.lbl_breadcrumbs)
         left_layout.addWidget(self.lbl_title)
-        layout.addLayout(left_layout)
+        
+        # Shared Header Logo - Shows logo in every tab next to breadcrumbs
+        self.header_logo = QLabel()
+        logo_path = os.path.join(os.path.dirname(__file__), "logo.png")
+        pixmap = QPixmap(logo_path)
+        if not pixmap.isNull():
+            scaled_pixmap = pixmap.scaled(QSize(28, 28), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            self.header_logo.setPixmap(scaled_pixmap)
+        else:
+            self.header_logo.setText("🛡️")
+            self.header_logo.setStyleSheet("font-size: 18px;")
+            
+        title_h = QHBoxLayout()
+        title_h.setSpacing(10)
+        title_h.addWidget(self.header_logo)
+        title_h.addLayout(left_layout)
+        
+        layout.addLayout(title_h)
         
         layout.addStretch()
         
@@ -1832,13 +1851,14 @@ class MainWindow(QMainWindow):
         self.api.cached_regional = data.get("regional_risk")
         self.api.cached_payment_methods = data.get("payment_methods")
         
+        # Always update dashboard in the background so it is up-to-date
+        try:
+            self.page_dashboard.update_with_stream_data(data)
+        except Exception as e:
+            print(f"Error updating dashboard stream data: {e}")
+            
         current_widget = self.content_stack.currentWidget()
-        if current_widget == self.page_dashboard:
-            try:
-                self.page_dashboard.update_with_stream_data(data)
-            except Exception as e:
-                print(f"Error updating dashboard stream data: {e}")
-        elif current_widget == self.page_regional:
+        if current_widget == self.page_regional:
             try:
                 self.page_regional.load_data()
             except Exception as e:
@@ -1881,6 +1901,12 @@ class DashboardView(QWidget):
         super().__init__()
         self.api = api
         self.main_window = main_window
+        self.num_total_accounts = 12450
+        self.num_total_tx_amount = 84.6*10000000
+        self.num_total_credit = 42.8*10000000
+        self.num_total_debit = 41.8*10000000
+        self.num_fraud_transactions = 137
+        self.num_active_alerts = 24
         self.init_ui()
         
     def init_ui(self):
@@ -2000,12 +2026,19 @@ class DashboardView(QWidget):
     def load_data(self):
         data = self.api.get_dashboard()
         
-        self.card_widgets["Total Accounts"].setText(f"{data.get('total_accounts', 12450):,}")
-        self.card_widgets["Total Transaction Amount"].setText(format_money(data.get('total_tx_amount', 84.6*10000000)))
-        self.card_widgets["Total Credit"].setText(format_money(data.get('total_credit', 42.8*10000000)))
-        self.card_widgets["Total Debit"].setText(format_money(data.get('total_debit', 41.8*10000000)))
-        self.card_widgets["Fraud Transactions"].setText(str(data.get('fraud_transactions', 137)))
-        self.card_widgets["Active Alerts"].setText(str(data.get('active_alerts', 24)))
+        self.num_total_accounts = data.get('total_accounts', 12450)
+        self.num_total_tx_amount = data.get('total_tx_amount', 84.6*10000000)
+        self.num_total_credit = data.get('total_credit', 42.8*10000000)
+        self.num_total_debit = data.get('total_debit', 41.8*10000000)
+        self.num_fraud_transactions = data.get('fraud_transactions', 137)
+        self.num_active_alerts = data.get('active_alerts', 24)
+        
+        self.card_widgets["Total Accounts"].setText(f"{self.num_total_accounts:,}")
+        self.card_widgets["Total Transaction Amount"].setText(format_money(self.num_total_tx_amount))
+        self.card_widgets["Total Credit"].setText(format_money(self.num_total_credit))
+        self.card_widgets["Total Debit"].setText(format_money(self.num_total_debit))
+        self.card_widgets["Fraud Transactions"].setText(str(self.num_fraud_transactions))
+        self.card_widgets["Active Alerts"].setText(str(self.num_active_alerts))
         
         self.render_activity_chart(data["chart_data"])
         
@@ -2043,12 +2076,19 @@ class DashboardView(QWidget):
             self.tbl_accounts.setItem(row, 4, QTableWidgetItem(acc["status"]))
             
     def update_with_stream_data(self, data):
-        self.card_widgets["Total Accounts"].setText(f"{data.get('total_accounts', 12450):,}")
-        self.card_widgets["Total Transaction Amount"].setText(format_money(data.get('total_tx_amount', 84.6*10000000)))
-        self.card_widgets["Total Credit"].setText(format_money(data.get('total_credit', 42.8*10000000)))
-        self.card_widgets["Total Debit"].setText(format_money(data.get('total_debit', 41.8*10000000)))
-        self.card_widgets["Fraud Transactions"].setText(str(data.get('fraud_transactions', 137)))
-        self.card_widgets["Active Alerts"].setText(str(data.get('active_alerts', 24)))
+        self.num_total_accounts = data.get('total_accounts', 12450)
+        self.num_total_tx_amount = data.get('total_tx_amount', 84.6*10000000)
+        self.num_total_credit = data.get('total_credit', 42.8*10000000)
+        self.num_total_debit = data.get('total_debit', 41.8*10000000)
+        self.num_fraud_transactions = data.get('fraud_transactions', 137)
+        self.num_active_alerts = data.get('active_alerts', 24)
+        
+        self.card_widgets["Total Accounts"].setText(f"{self.num_total_accounts:,}")
+        self.card_widgets["Total Transaction Amount"].setText(format_money(self.num_total_tx_amount))
+        self.card_widgets["Total Credit"].setText(format_money(self.num_total_credit))
+        self.card_widgets["Total Debit"].setText(format_money(self.num_total_debit))
+        self.card_widgets["Fraud Transactions"].setText(str(self.num_fraud_transactions))
+        self.card_widgets["Active Alerts"].setText(str(self.num_active_alerts))
         
         self.render_activity_chart(data["chart_data"])
         
@@ -2080,12 +2120,62 @@ class DashboardView(QWidget):
             self.tbl_accounts.setItem(row, 3, QTableWidgetItem(acc["region"]))
             self.tbl_accounts.setItem(row, 4, QTableWidgetItem(acc["status"]))
             
+    def add_live_transaction(self, tx):
+        amt = tx["amount"]
+        score = tx["risk_score"]
+        lvl = tx["risk_level"]
+        acc_id = tx["receiver_id"]
+        
+        self.num_total_tx_amount += amt
+        self.num_total_credit += amt
+        self.num_total_debit += amt
+        
+        if score >= 75:
+            self.num_fraud_transactions += 1
+            self.num_active_alerts += 1
+            
+            # Add alert to recent alerts table
+            alert_id = f"AL-{random.randint(20000, 29999)}"
+            self.tbl_alerts.insertRow(0)
+            self.tbl_alerts.setItem(0, 0, QTableWidgetItem(alert_id))
+            self.tbl_alerts.setItem(0, 1, QTableWidgetItem(acc_id))
+            self.tbl_alerts.setItem(0, 2, QTableWidgetItem("Suspicious Activity"))
+            
+            badge = TableBadgeLabel(f"{score} {lvl}", lvl.lower())
+            self.tbl_alerts.setCellWidget(0, 3, badge)
+            self.tbl_alerts.setItem(0, 4, QTableWidgetItem(f"₹{int(amt):,}"))
+            
+            btn = QPushButton("Investigate")
+            btn.setProperty("class", "PrimaryButton")
+            btn.setStyleSheet("padding: 2px 6px; font-size: 11px;")
+            btn.clicked.connect(lambda checked, aid=acc_id: self.main_window.investigate_account(aid))
+            self.tbl_alerts.setCellWidget(0, 5, btn)
+            
+            if self.tbl_alerts.rowCount() > 5:
+                self.tbl_alerts.removeRow(self.tbl_alerts.rowCount() - 1)
+                
+        # Update labels
+        self.card_widgets["Total Transaction Amount"].setText(format_money(self.num_total_tx_amount))
+        self.card_widgets["Total Credit"].setText(format_money(self.num_total_credit))
+        self.card_widgets["Total Debit"].setText(format_money(self.num_total_debit))
+        self.card_widgets["Fraud Transactions"].setText(str(self.num_fraud_transactions))
+        self.card_widgets["Active Alerts"].setText(str(self.num_active_alerts))
+            
     def update_chart_filter(self, filter_name):
         self.chart_filter = filter_name
         self.load_data()
         
     def render_activity_chart(self, chart_data):
         self.canvas.clear()
+        
+        # Remove any extra axes (like twinx) from the figure to prevent overlapping text on redraw
+        for extra_ax in list(self.canvas.fig.axes):
+            if extra_ax is not self.canvas.ax:
+                self.canvas.fig.delaxes(extra_ax)
+                
+        # Adjust margins to leave space for right-hand Y labels
+        self.canvas.fig.subplots_adjust(left=0.08, right=0.90, top=0.88, bottom=0.15)
+        
         labels = chart_data["labels"]
         total = chart_data["total"]
         credit = chart_data["credit"]
@@ -2335,6 +2425,25 @@ class LiveTransactionsView(QWidget):
             item = self.scroll_layout.takeAt(self.scroll_layout.count() - 1)
             if item.widget():
                 item.widget().deleteLater()
+                
+        # Clean currency formatted amount string (e.g. ₹68,000 -> 68000.0)
+        try:
+            amount_numeric = float(amount.replace("₹", "").replace(",", ""))
+        except ValueError:
+            amount_numeric = 0.0
+            
+        tx_data = {
+            "sender_id": counterparty_id,
+            "receiver_id": acc_id,
+            "amount": amount_numeric,
+            "risk_score": score,
+            "risk_level": lvl,
+            "method": method,
+            "time": time_str
+        }
+        
+        # Increment metrics on the main dashboard tab in real-time
+        self.main_window.page_dashboard.add_live_transaction(tx_data)
 
 
 # ---------------------------------------------------------
@@ -2545,31 +2654,33 @@ class NetworkAnalysisView(QWidget):
         right_layout.setSpacing(0)
         
         self.tabs = QTabWidget()
+        logo_path = os.path.join(os.path.dirname(__file__), "logo.png")
+        tab_icon = QIcon(logo_path)
         
         # Sub-Tab 1: General Info Card Mockups
         self.tab_info = QWidget()
         self.init_info_tab()
-        self.tabs.addTab(self.tab_info, "General Info")
+        self.tabs.addTab(self.tab_info, tab_icon, "General Info")
         
         # Sub-Tab 2: Transactions list
         self.tab_tx = QWidget()
         self.init_tx_tab()
-        self.tabs.addTab(self.tab_tx, "Transactions")
+        self.tabs.addTab(self.tab_tx, tab_icon, "Transactions")
         
         # Sub-Tab 3: Network Graph Map
         self.tab_net = QWidget()
         self.init_net_tab()
-        self.tabs.addTab(self.tab_net, "Network Topology")
+        self.tabs.addTab(self.tab_net, tab_icon, "Network Topology")
         
         # Sub-Tab 4: AI Explanations & SHAP Waterfall
         self.tab_ai = QWidget()
         self.init_ai_tab()
-        self.tabs.addTab(self.tab_ai, "Explainable AI (SHAP)")
+        self.tabs.addTab(self.tab_ai, tab_icon, "Explainable AI (SHAP)")
         
         # Sub-Tab 5: PDF reports Suite
         self.tab_rep = QWidget()
         self.init_rep_tab()
-        self.tabs.addTab(self.tab_rep, "Investigation Reports")
+        self.tabs.addTab(self.tab_rep, tab_icon, "Investigation Reports")
         
         right_layout.addWidget(self.tabs)
         splitter.addWidget(right_panel)
@@ -3792,6 +3903,8 @@ class FraudAnalyticsView(QWidget):
         layout.addWidget(lbl_sub)
         
         tab_widget = QTabWidget()
+        logo_path = os.path.join(os.path.dirname(__file__), "logo.png")
+        tab_icon = QIcon(logo_path)
         
         # Tab 1: KPIs
         tab_kpis = QWidget()
@@ -3807,7 +3920,7 @@ class FraudAnalyticsView(QWidget):
         kpi_lay.addRow("Suspicious Accounts Count:", txt_susp_accs)
         kpi_lay.addRow("Average Fraud Ticket (₹):", txt_avg_amt)
         kpi_lay.addRow("Detection Success Rate (%):", txt_det_rate)
-        tab_widget.addTab(tab_kpis, "KPI Stats")
+        tab_widget.addTab(tab_kpis, tab_icon, "KPI Stats")
         
         # Tab 2: Slices
         tab_slices = QWidget()
@@ -3832,7 +3945,7 @@ class FraudAnalyticsView(QWidget):
         slices_lay.addRow("High Risk Cases count:", txt_high)
         slices_lay.addRow("Medium Risk Cases count:", txt_med)
         slices_lay.addRow("Low Risk Cases count:", txt_low)
-        tab_widget.addTab(tab_slices, "Payment & Risks")
+        tab_widget.addTab(tab_slices, tab_icon, "Payment & Risks")
         
         # Tab 3: Monthly History (Mar to Aug)
         tab_history = QWidget()
@@ -3855,7 +3968,7 @@ class FraudAnalyticsView(QWidget):
             
             hist_inputs.append((txt_c, txt_a))
             
-        tab_widget.addTab(tab_history, "Monthly Trends")
+        tab_widget.addTab(tab_history, tab_icon, "Monthly Trends")
         
         layout.addWidget(tab_widget)
         
@@ -4541,6 +4654,8 @@ class PaymentMethodsView(QWidget):
         layout.addWidget(lbl_sub)
         
         tab_widget = QTabWidget()
+        logo_path = os.path.join(os.path.dirname(__file__), "logo.png")
+        tab_icon = QIcon(logo_path)
         
         # Tab 1: High-Volume Channels (UPI, Debit, Credit)
         tab1 = QWidget()
@@ -4579,7 +4694,7 @@ class PaymentMethodsView(QWidget):
         lay1.addWidget(txt_cre_am, 3, 2)
         lay1.addWidget(txt_cre_ri, 3, 3)
         
-        tab_widget.addTab(tab1, "Main Channels")
+        tab_widget.addTab(tab1, tab_icon, "Main Channels")
         
         # Tab 2: Other Channels (Net Banking, PayPal, Other)
         tab2 = QWidget()
@@ -4618,7 +4733,7 @@ class PaymentMethodsView(QWidget):
         lay2.addWidget(txt_oth_am, 3, 2)
         lay2.addWidget(txt_oth_ri, 3, 3)
         
-        tab_widget.addTab(tab2, "Other Channels")
+        tab_widget.addTab(tab2, tab_icon, "Other Channels")
         
         layout.addWidget(tab_widget)
         
