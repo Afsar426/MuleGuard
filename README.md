@@ -8,6 +8,14 @@ MuleGuard is an AI-assisted financial crime intelligence platform designed to de
 
 ---
 
+## 📥 Download Standalone Executables
+You can download the pre-compiled macOS standalone executables directly from the GitHub Releases page:
+👉 **[MuleGuard v1.0.0 Release](https://github.com/Raghav0079/MuleGuard/releases/tag/v1.0.0)**
+- **`main.zip`**: The FastAPI backend daemon service.
+- **`app.zip`**: The PySide6 desktop UI client application bundle.
+
+---
+
 ## 🛠️ Technology Stack & Architecture
 
 - **Desktop UI (Frontend)**: Native PySide6 (Qt for Python) terminal with high-fidelity visualization cards, custom sparklines, Matplotlib chart views, and a collapsible sidebar.
