@@ -14,6 +14,19 @@ You can download the pre-compiled macOS standalone executables directly from the
 - **`main.zip`**: The FastAPI backend daemon service.
 - **`app.zip`**: The PySide6 desktop UI client application bundle.
 
+Alternatively, you can get them directly from the repository's `dist/` directory, split into 50MB chunks to bypass GitHub size limits:
+- **Reassemble and unzip Backend (macOS/Linux)**:
+  ```bash
+  zip -F dist/main_split.zip --out main.zip
+  unzip main.zip
+  ```
+- **Reassemble and unzip Desktop Client (macOS/Linux)**:
+  ```bash
+  zip -F dist/app_split.zip --out app.zip
+  unzip app.zip
+  ```
+- **On Windows**: Open `main_split.zip` / `app_split.zip` in WinRAR, 7-Zip, or WinZip and extract it natively (it will automatically detect the `.z01`, `.z02` parts).
+
 ---
 
 ## 🛠️ Technology Stack & Architecture
