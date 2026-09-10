@@ -99,7 +99,41 @@ Feature Engineering
 ```
 
 ---
+## 🖥️ Application Screenshots
 
+MuleGuard provides a comprehensive financial intelligence interface for
+monitoring transactions, identifying suspicious accounts, investigating
+fraud alerts, and analyzing fraud patterns.
+
+### 📊 Dashboard
+
+<p align="center">
+  <img src="./screenshots/dashboard.png" width="100%">
+</p>
+
+### ⚡ Live Transaction Monitor
+
+<p align="center">
+  <img src="./screenshots/live-transactions.png" width="100%">
+</p>
+
+### 👤 Account Intelligence
+
+<p align="center">
+  <img src="./screenshots/accounts.png" width="100%">
+</p>
+
+### 🚨 Active Alerts
+
+<p align="center">
+  <img src="./screenshots/active-alerts.png" width="100%">
+</p>
+
+### 📈 Fraud Analytics
+
+<p align="center">
+  <img src="./screenshots/fraud-analytics.png" width="100%">
+</p>
 ## 🧠 Machine Learning & Feature Engineering
 
 MuleGuard does not rely on simple static rules. Instead, it uses a dynamic feature extraction pipeline to feed machine learning models:
